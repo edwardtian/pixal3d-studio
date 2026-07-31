@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RTS Art</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"></script>
+</head>
+<body>
+
+<!-- ===== Auth Page ===== -->
+<div id="auth-page" class="auth-page">
+    <div class="auth-card">
+        <div class="logo">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3L2 8l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            <span>RTS Art</span>
+        </div>
+        <p class="subtitle">High-fidelity pixel-aligned image-to-3D generation</p>
+
+        <div class="auth-tabs">
+            <div class="auth-tab active" data-tab="login">Login</div>
+        </div>
+
+        <form class="auth-form active" id="login-form">
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="login-username" required>
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="login-password" required>
+            </div>
+            <div class="auth-error" id="login-error"></div>
+            <button type="submit" class="btn btn-primary btn-full">Login</button>
+        </form>
+        <p style="text-align:center;color:var(--text-dim);font-size:0.75rem;margin-top:1rem;">
+            Don't have an account? Ask an admin to create one.
+        </p>
+    </div>
+</div>
+
+<!-- ===== Main App ===== -->
+<div id="main-app" class="app-shell" style="display:none;">
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3L2 8l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                <span>RTS Art</span>
+            </div>
+            <div class="user-menu">
+                <span class="user-badge" id="user-badge"></span>
+                <button class="btn btn-outline btn-sm" onclick="logout()">Logout</button>
+            </div>
+        </div>
+
+        <div id="queue-badge" class="queue-badge" style="margin-bottom: 1rem;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg>
+            <span>Queue: <span id="queue-count">0</span></span>
+        </div>
+
+        <button class="btn btn-primary btn-full" onclick="navigateTo('create')" style="margin-bottom: 0.5rem;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            New Task
+        </button>
+        <button class="btn btn-outline btn-full" onclick="navigateTo('history')" style="margin-bottom: 0.5rem;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+            Task History
+        </button>
+        <button class="btn btn-outline btn-full" id="admin-nav-btn" onclick="navigateTo('admin')" style="display:none; margin-bottom: 0.5rem;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            User Management
+        </button>
+    </div>
+
+    <!-- Main content -->
+    <div class="main-content">
+        <!-- Create View -->
+        <div class="view active" id="view-create">
+            <div class="create-layout">
+                <div class="create-main">
+                    <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
+                        <input type="file" id="file-input" hidden accept="image/*">
+                        <div class="upload-hint" id="upload-hint">
+                            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            <h3>Upload an image</h3>
+                            <p>Drag & drop or click to browse</p>
+                        </div>
+                        <img id="source-preview" src="" alt="">
+                    </div>
+
+                    <div id="crop-toolbar" class="crop-toolbar" style="display:none;">
+                        <button class="btn btn-outline btn-sm" onclick="enterCropMode()">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+                            Crop
+                        </button>
+                        <button class="btn btn-outline btn-sm" onclick="resetCrop()">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                            Reset
+                        </button>
+                    </div>
+
+                    <div id="crop-editor" style="display:none;">
+                        <div class="crop-container" id="crop-container">
+                            <canvas id="crop-canvas"></canvas>
+                        </div>
+                        <div class="crop-toolbar">
+                            <button class="btn btn-primary btn-sm" onclick="applyCrop()">Apply Crop</button>
+                            <button class="btn btn-outline btn-sm" onclick="cancelCrop()">Cancel</button>
+                        </div>
+                        <div class="crop-info">Drag to select the crop area</div>
+                    </div>
+
+                    <button class="btn btn-primary btn-full" id="submit-btn" disabled onclick="submitTask()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                        Submit to Queue
+                    </button>
+                </div>
+
+                <div class="param-panel" id="param-panel">
+                    <!-- Parameters injected by JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- History View -->
+        <div class="view" id="view-history">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
+                <h2>Task History</h2>
+                <div id="admin-filters" style="display:none;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                    <select id="filter-user" style="background:var(--surface-light);border:1px solid var(--border);color:white;padding:0.4rem;border-radius:var(--radius-sm);font-size:0.8rem;">
+                        <option value="">All Users</option>
+                    </select>
+                    <input type="date" id="filter-date-from" style="background:var(--surface-light);border:1px solid var(--border);color:white;padding:0.4rem;border-radius:var(--radius-sm);font-size:0.8rem;">
+                    <span style="color:var(--text-dim);font-size:0.8rem;">to</span>
+                    <input type="date" id="filter-date-to" style="background:var(--surface-light);border:1px solid var(--border);color:white;padding:0.4rem;border-radius:var(--radius-sm);font-size:0.8rem;">
+                    <button class="btn btn-outline btn-sm" onclick="loadTaskHistory()">Filter</button>
+                </div>
+            </div>
+            <div class="task-list" id="task-list"></div>
+        </div>
+
+        <!-- Task Detail View -->
+        <div class="view" id="view-detail">
+            <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">
+                <button class="btn btn-outline btn-sm" onclick="navigateTo('history')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                    Back
+                </button>
+                <h2 id="detail-title">Task Detail</h2>
+            </div>
+            <div class="task-detail-layout" id="detail-content"></div>
+        </div>
+
+        <!-- Admin View -->
+        <div class="view" id="view-admin">
+            <h2 style="margin-bottom: 1rem;">User Management</h2>
+
+            <div class="detail-section" style="margin-bottom: 1rem;">
+                <h3>Create New User</h3>
+                <form id="create-user-form" style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:0.5rem;align-items:end;">
+                    <div>
+                        <label style="font-size:0.75rem;color:var(--text-dim);">Username</label>
+                        <input type="text" id="new-user-username" required minlength="3" style="width:100%;background:var(--surface-light);border:1px solid var(--border);color:white;padding:0.55rem;border-radius:var(--radius-sm);font-size:0.85rem;">
+                    </div>
+                    <div>
+                        <label style="font-size:0.75rem;color:var(--text-dim);">Email (optional)</label>
+                        <input type="email" id="new-user-email" style="width:100%;background:var(--surface-light);border:1px solid var(--border);color:white;padding:0.55rem;border-radius:var(--radius-sm);font-size:0.85rem;">
+                    </div>
+                    <div>
+                        <label style="font-size:0.75rem;color:var(--text-dim);">Password (min 6)</label>
+                        <input type="password" id="new-user-password" required minlength="6" style="width:100%;background:var(--surface-light);border:1px solid var(--border);color:white;padding:0.55rem;border-radius:var(--radius-sm);font-size:0.85rem;">
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm">Create</button>
+                </form>
+                <div id="create-user-error" style="color:var(--danger);font-size:0.8rem;margin-top:0.5rem;min-height:1em;"></div>
+            </div>
+
+            <div class="detail-section">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Username</th>
+                            <th>Email</th>
+                            <th>Role</th>
+                            <th>Active</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="admin-users-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Progress Overlay -->
+<div class="progress-overlay" id="progress-overlay">
+    <div class="loader-ring"></div>
+    <div class="progress-info">
+        <div class="progress-stage-name" id="progress-stage">Initializing...</div>
+        <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="progress-fill"></div>
+        </div>
+        <div class="progress-step-text" id="progress-step"></div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
