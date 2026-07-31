@@ -1,0 +1,297 @@
+// ===== Translations =====
+const I18N = {
+    en: {
+        'app.title': 'Pixal3D Studio',
+        'app.subtitle': 'High-fidelity pixel-aligned image-to-3D generation',
+        'auth.login_tab': 'Login',
+        'auth.login_btn': 'Login',
+        'auth.username': 'Username',
+        'auth.password': 'Password',
+        'auth.no_account': "Don't have an account? Ask an admin to create one.",
+        'auth.admin_suffix': ' (admin)',
+        'nav.new_task': 'New Task',
+        'nav.task_history': 'Task History',
+        'nav.user_management': 'User Management',
+        'nav.logout': 'Logout',
+        'queue.label': 'Queue',
+        'create.upload_title': 'Upload an image',
+        'create.upload_hint': 'Drag & drop or click to browse',
+        'create.crop': 'Crop',
+        'create.reset': 'Reset',
+        'create.apply_crop': 'Apply Crop',
+        'create.cancel': 'Cancel',
+        'create.drag_hint': 'Drag to select the crop area',
+        'create.submit': 'Submit to Queue',
+        'create.params': 'Parameters',
+        'create.uploading': 'Uploading image...',
+        'create.submitting': 'Submitting to queue...',
+        'history.title': 'Task History',
+        'history.all_users': 'All Users',
+        'history.to': 'to',
+        'history.filter': 'Filter',
+        'history.empty': 'No tasks yet. Create one!',
+        'history.res': 'Res',
+        'history.seed': 'Seed',
+        'history.user': 'User',
+        'detail.back': 'Back',
+        'detail.result': '3D Result',
+        'detail.source_image': 'Source Image',
+        'detail.3d_model': '3D Model',
+        'detail.download_glb': 'Download GLB',
+        'detail.delete': 'Delete',
+        'detail.renders': 'Preview Renders',
+        'detail.no_renders': 'No renders available',
+        'detail.params': 'Parameters',
+        'detail.fov': 'FOV',
+        'detail.distance': 'Distance',
+        'detail.task_failed': 'Task failed: ',
+        'detail.processing': 'Processing: ',
+        'detail.task_is': 'Task is ',
+        'admin.title': 'User Management',
+        'admin.create_user': 'Create New User',
+        'admin.username': 'Username',
+        'admin.email': 'Email (optional)',
+        'admin.password': 'Password (min 6)',
+        'admin.create': 'Create',
+        'admin.id': 'ID',
+        'admin.role': 'Role',
+        'admin.active': 'Active',
+        'admin.created': 'Created',
+        'admin.actions': 'Actions',
+        'admin.yes': 'Yes',
+        'admin.no': 'No',
+        'admin.delete': 'Delete',
+        'status.queued': 'queued',
+        'status.processing': 'processing',
+        'status.completed': 'completed',
+        'status.failed': 'failed',
+        'msg.selection_small': 'Selection too small',
+        'msg.cropped': 'Image cropped',
+        'msg.reverted': 'Reverted to original image',
+        'msg.submitted': 'Task submitted to queue!',
+        'msg.submit_failed': 'Submit failed: ',
+        'msg.completed': 'Task completed!',
+        'msg.task_failed': 'Task failed: ',
+        'msg.delete_task': 'Delete this task?',
+        'msg.task_deleted': 'Task deleted',
+        'msg.delete_failed': 'Delete failed: ',
+        'msg.user_created': 'User created successfully',
+        'msg.role_updated': 'Role updated',
+        'msg.update_failed': 'Update failed: ',
+        'msg.user_updated': 'User updated',
+        'msg.delete_user': 'Delete this user and all their tasks?',
+        'msg.user_deleted': 'User deleted',
+        'msg.params_failed': 'Failed to load parameters: ',
+        'msg.tasks_failed': 'Failed to load tasks: ',
+        'msg.task_failed_load': 'Failed to load task: ',
+        'msg.users_failed': 'Failed to load users: ',
+        'msg.queue_ahead': 'In queue: ',
+        'msg.queue_ahead_suffix': ' ahead',
+        'msg.waiting': 'Waiting...',
+        'msg.processing': 'Processing...',
+        'msg.submitting': 'Submitting...',
+    },
+    zh: {
+        'app.title': 'Pixal3D Studio',
+        'app.subtitle': '高保真像素对齐图像到3D生成',
+        'auth.login_tab': '登录',
+        'auth.login_btn': '登录',
+        'auth.username': '用户名',
+        'auth.password': '密码',
+        'auth.no_account': '还没有账号？请联系管理员创建。',
+        'auth.admin_suffix': ' (管理员)',
+        'nav.new_task': '新建任务',
+        'nav.task_history': '任务历史',
+        'nav.user_management': '用户管理',
+        'nav.logout': '退出登录',
+        'queue.label': '队列',
+        'create.upload_title': '上传图片',
+        'create.upload_hint': '拖拽或点击选择文件',
+        'create.crop': '裁剪',
+        'create.reset': '重置',
+        'create.apply_crop': '应用裁剪',
+        'create.cancel': '取消',
+        'create.drag_hint': '拖拽选择裁剪区域',
+        'create.submit': '提交到队列',
+        'create.params': '参数设置',
+        'create.uploading': '正在上传图片...',
+        'create.submitting': '正在提交到队列...',
+        'history.title': '任务历史',
+        'history.all_users': '所有用户',
+        'history.to': '至',
+        'history.filter': '筛选',
+        'history.empty': '暂无任务，快去创建一个吧！',
+        'history.res': '分辨率',
+        'history.seed': '种子',
+        'history.user': '用户',
+        'detail.back': '返回',
+        'detail.result': '3D结果',
+        'detail.source_image': '原图',
+        'detail.3d_model': '3D模型',
+        'detail.download_glb': '下载GLB',
+        'detail.delete': '删除',
+        'detail.renders': '预览渲染',
+        'detail.no_renders': '暂无渲染图',
+        'detail.params': '参数',
+        'detail.fov': '视场角',
+        'detail.distance': '距离',
+        'detail.task_failed': '任务失败：',
+        'detail.processing': '处理中：',
+        'detail.task_is': '任务状态：',
+        'admin.title': '用户管理',
+        'admin.create_user': '创建新用户',
+        'admin.username': '用户名',
+        'admin.email': '邮箱（可选）',
+        'admin.password': '密码（至少6位）',
+        'admin.create': '创建',
+        'admin.id': 'ID',
+        'admin.role': '角色',
+        'admin.active': '启用',
+        'admin.created': '创建时间',
+        'admin.actions': '操作',
+        'admin.yes': '是',
+        'admin.no': '否',
+        'admin.delete': '删除',
+        'status.queued': '排队中',
+        'status.processing': '处理中',
+        'status.completed': '已完成',
+        'status.failed': '失败',
+        'msg.selection_small': '选区太小',
+        'msg.cropped': '图片已裁剪',
+        'msg.reverted': '已恢复原始图片',
+        'msg.submitted': '任务已提交到队列！',
+        'msg.submit_failed': '提交失败：',
+        'msg.completed': '任务完成！',
+        'msg.task_failed': '任务失败：',
+        'msg.delete_task': '确认删除此任务？',
+        'msg.task_deleted': '任务已删除',
+        'msg.delete_failed': '删除失败：',
+        'msg.user_created': '用户创建成功',
+        'msg.role_updated': '角色已更新',
+        'msg.update_failed': '更新失败：',
+        'msg.user_updated': '用户已更新',
+        'msg.delete_user': '确认删除此用户及其所有任务？',
+        'msg.user_deleted': '用户已删除',
+        'msg.params_failed': '参数加载失败：',
+        'msg.tasks_failed': '任务列表加载失败：',
+        'msg.task_failed_load': '任务详情加载失败：',
+        'msg.users_failed': '用户列表加载失败：',
+        'msg.queue_ahead': '队列中：前方还有 ',
+        'msg.queue_ahead_suffix': ' 个任务',
+        'msg.waiting': '等待中...',
+        'msg.processing': '处理中...',
+        'msg.submitting': '提交中...',
+    }
+};
+
+const PARAM_LABELS_ZH = {
+    'Generation Seed': '生成种子',
+    'Target Resolution': '目标分辨率',
+    'Camera FOV (Field of View)': '相机视场角',
+    'FOV Unit': '视场角单位',
+    'Low VRAM Mode': '低显存模式',
+    'SS Guidance Strength': '稀疏结构引导强度',
+    'SS Guidance Rescale': '稀疏结构引导重缩放',
+    'SS Sampling Steps': '稀疏结构采样步数',
+    'SS Rescale t': '稀疏结构时间重缩放',
+    'Shape Guidance Strength': '形状引导强度',
+    'Shape Guidance Rescale': '形状引导重缩放',
+    'Shape Sampling Steps': '形状采样步数',
+    'Shape Rescale t': '形状时间重缩放',
+    'Texture Guidance Strength': '纹理引导强度',
+    'Texture Guidance Rescale': '纹理引导重缩放',
+    'Texture Sampling Steps': '纹理采样步数',
+    'Texture Rescale t': '纹理时间重缩放',
+    'Mesh Scale': '网格缩放',
+    'Extend Pixel': '扩展像素',
+    'Image Resolution (Camera Estimation)': '图像分辨率（相机估计）',
+    'Max Num Tokens': '最大Token数',
+    'GLB Decimation Target': 'GLB简化目标',
+    'GLB Texture Size': 'GLB纹理尺寸',
+};
+
+const PARAM_TOOLTIPS_ZH = {
+    'seed': '随机种子，控制整个生成过程。相同的种子+相同图片+相同参数=相同输出。更改种子可从同一图片探索不同的3D变体。',
+    'resolution': '内部管线分辨率。1536产生更高保真度的几何和纹理，但需要更多显存和时间。1024更快且占用更少内存。低显存模式下默认为1024。',
+    'manual_fov': '相机视场角（度）。设为-1（自动）让MoGe-2自动估计视场角。如果生成的3D模型看起来扭曲或拉伸，尝试手动值——11.5°通常适用于大多数以物体为中心的图片。',
+    'fov_unit': '手动视场角的单位。度更直观（1°-170°）；弧度是原始数学单位（0.02-2.97弧度）。仅在启用手动视场角时使用。',
+    'low_vram': '启用后，模型保留在CPU上，按管线阶段按需加载到GPU。将峰值显存从约18GB降低到约10-12GB，代价是因反复CPU↔GPU传输而变慢。',
+    'ss_guidance_strength': '稀疏结构（阶段1）流匹配采样器的无分类器引导比例。较高值更强烈地推动生成朝向输入图像条件，提高保真度但可能引入伪影。较低值允许更多创作自由。',
+    'ss_guidance_rescale': '阶段1的引导重缩放因子。在引导和非引导预测之间插值以防止过饱和。0.7是良好平衡；较低值可能产生更多样化结构，较高值更严格地遵循条件。',
+    'ss_sampling_steps': '稀疏结构采样器的去噪步数。更多步数通常提高质量但收益递减。12是良好默认值；减少到4-8获得更快但较低质量的结果，增加到20+获得边际质量提升。',
+    'ss_rescale_t': '稀疏结构流匹配ODE的时间重缩放因子。控制采样步在时间范围内的密度。较高值将更多步集中在t=0（噪声端），有助于捕获粗略结构。仅在理解流匹配采样时调整。',
+    'shape_slat_guidance_strength': '形状潜在（阶段2）流匹配采样器的无分类器引导比例。控制形状生成对输入图像和稀疏结构的遵循程度。较高=更忠实但可能过度锐化的几何。',
+    'shape_slat_guidance_rescale': '阶段2的引导重缩放因子。防止形状潜在中的过引导伪影。0.5提供保真度和多样性之间的平衡。',
+    'shape_slat_sampling_steps': '形状潜在采样器的去噪步数。更多步=更精细的几何细节但更慢。推荐12；4-8用于快速预览，20+用于最佳质量。',
+    'shape_slat_rescale_t': '形状流匹配ODE的时间重缩放。影响去噪轨迹上的步分布。默认3.0效果良好；仅用于高级调优。',
+    'tex_slat_guidance_strength': '纹理潜在（阶段3）流匹配采样器的无分类器引导比例。默认1.0表示无引导（纯采样），对纹理效果最佳。谨慎增加——高引导可能导致纹理色斑或颜色渗色。',
+    'tex_slat_guidance_rescale': '阶段3的引导重缩放因子。由于纹理引导通常为1.0（无引导），此重缩放在默认值下影响最小。仅在纹理引导强度增加到1.0以上时相关。',
+    'tex_slat_sampling_steps': '纹理潜在采样器的去噪步数。更多步产生更平滑、更详细的PBR纹理。12是最佳点；减少以加速或增加到20+用于复杂材质。',
+    'tex_slat_rescale_t': '纹理流匹配ODE的时间重缩放。控制采样轨迹上的步密度。默认3.0调优良好；仅用于研究目的修改。',
+    'mesh_scale': '在相机参数计算期间应用于3D网格的缩放因子。影响生成的3D对象相对于相机的定位。1.0表示网格适合归一化[-0.5, 0.5]边界框。很少需要更改。',
+    'extend_pixel': '计算相机距离时扩展图像边界的像素数。非零值将相机向后推，确保完整捕获物体，即使它略微超出图像帧。0适用于大多数裁剪良好的图片。',
+    'image_resolution': 'MoGe-2相机估计处理输入图像的分辨率。512是推荐默认值。较高分辨率可能略微提高相机精度但增加MoGe-2推理时间。',
+    'max_num_tokens': '级联管线中允许的最大稀疏Token数。限制生成的3D结构的复杂性。较高值允许更多几何细节但增加显存使用和推理时间。49152是测试默认值。',
+    'decimation_target': 'GLB导出期间网格简化的目标三角形数。较高值保留更多几何细节但产生更大文件。100,000对大多数用例是良好平衡。减少到50,000用于更快处理。',
+    'texture_size': '导出GLB中烘焙的PBR纹理图集分辨率。2048提供良好质量；1024对大多数Web查看器足够；4096提供高细节但可能显著减慢UV展开。',
+};
+
+const GROUP_ZH = {
+    'Base': '基础',
+    'Sparse Structure': '稀疏结构',
+    'Shape': '形状',
+    'Texture': '纹理',
+    'Camera': '相机',
+    'Advanced': '高级',
+    'GLB Export': 'GLB导出',
+};
+
+let currentLang = localStorage.getItem('pixal3d_lang') || 'en';
+
+function t(key) {
+    return I18N[currentLang]?.[key] || I18N['en']?.[key] || key;
+}
+
+function tParam(label) {
+    if (currentLang === 'zh' && PARAM_LABELS_ZH[label]) return PARAM_LABELS_ZH[label];
+    return label;
+}
+
+function tParamTooltip(key) {
+    if (currentLang === 'zh' && PARAM_TOOLTIPS_ZH[key]) return PARAM_TOOLTIPS_ZH[key];
+    return parameterDefs[key]?.tooltip || '';
+}
+
+function tGroup(name) {
+    if (currentLang === 'zh' && GROUP_ZH[name]) return GROUP_ZH[name];
+    return name;
+}
+
+function tStatus(status) {
+    return t('status.' + status);
+}
+
+function setLang(lang) {
+    currentLang = lang;
+    localStorage.setItem('pixal3d_lang', lang);
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+    applyTranslations();
+    const btnText = lang === 'zh' ? 'EN' : '中文';
+    const langBtn = document.getElementById('lang-switch');
+    if (langBtn) langBtn.textContent = btnText;
+    const langBtnAuth = document.getElementById('lang-switch-auth');
+    if (langBtnAuth) langBtnAuth.textContent = btnText;
+    if (authToken) {
+        renderParameters();
+        if (document.getElementById('view-history').classList.contains('active')) loadTaskHistory();
+        if (document.getElementById('view-admin').classList.contains('active')) loadAdminUsers();
+        if (currentDetailView) loadTaskDetail(currentDetailView);
+    }
+}
+
+function applyTranslations() {
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        el.textContent = t(el.dataset.i18n);
+    });
+    document.title = t('app.title');
+}

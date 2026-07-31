@@ -69,17 +69,21 @@ function initAuth() {
 function showAuthPage() {
     document.getElementById('auth-page').style.display = 'flex';
     document.getElementById('main-app').style.display = 'none';
+    applyTranslations();
+    const langBtn = document.getElementById('lang-switch-auth');
+    if (langBtn) langBtn.textContent = currentLang === 'zh' ? 'EN' : '中文';
 }
 
 function showMainApp() {
     document.getElementById('auth-page').style.display = 'none';
     document.getElementById('main-app').style.display = 'flex';
+    applyTranslations();
 
     const badge = document.getElementById('user-badge');
     badge.textContent = currentUser.username;
     badge.classList.toggle('admin', currentUser.role === 'admin');
     if (currentUser.role === 'admin') {
-        badge.textContent += ' (admin)';
+        badge.textContent += t('auth.admin_suffix');
         document.getElementById('admin-nav-btn').style.display = 'flex';
     }
 
@@ -155,7 +159,7 @@ async function loadParameters() {
         parameterDefs = await apiFetch('/parameters');
         renderParameters();
     } catch (err) {
-        showToast('Failed to load parameters: ' + err.message);
+        showToast(t('msg.params_failed') + err.message);
     }
 }
 
@@ -168,10 +172,10 @@ function renderParameters() {
         groups[g].push({ key, ...def });
     }
 
-    let html = '<h3 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-dim);margin-bottom:1rem;">Parameters</h3>';
+    let html = `<h3 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-dim);margin-bottom:1rem;">${t('create.params')}</h3>`;
 
     for (const [groupName, params] of Object.entries(groups)) {
-        html += `<div class="param-group"><div class="param-group-title">${groupName}</div>`;
+        html += `<div class="param-group"><div class="param-group-title">${tGroup(groupName)}</div>`;
         for (const p of params) {
             html += renderParamItem(p);
         }
@@ -183,7 +187,9 @@ function renderParameters() {
 }
 
 function renderParamItem(p) {
-    const tooltipHtml = `<span class="tooltip-icon">?<span class="tooltip-text">${p.tooltip}</span></span>`;
+    const label = tParam(p.label);
+    const tooltip = tParamTooltip(p.key);
+    const tooltipHtml = `<span class="tooltip-icon">?<span class="tooltip-text">${tooltip}</span></span>`;
     let controlHtml = '';
 
     if (p.type === 'select') {
@@ -203,12 +209,11 @@ function renderParamItem(p) {
         }
     }
 
-    // Special handling for FOV: combine manual_fov and fov_unit with an "Auto" checkbox
     if (p.key === 'manual_fov') {
         return `
             <div class="param-item">
                 <div class="param-label-row">
-                    <span class="param-label">${p.label} ${tooltipHtml}</span>
+                    <span class="param-label">${label} ${tooltipHtml}</span>
                     <label style="display:flex;align-items:center;gap:4px;font-size:0.75rem;color:var(--text-dim);cursor:pointer;">
                         <input type="checkbox" id="fov-auto" checked onchange="toggleFovAuto()" style="accent-color:var(--primary);width:14px;height:14px;"> Auto
                     </label>
@@ -228,7 +233,7 @@ function renderParamItem(p) {
     return `
         <div class="param-item">
             <div class="param-label-row">
-                <span class="param-label">${p.label} ${tooltipHtml}</span>
+                <span class="param-label">${label} ${tooltipHtml}</span>
             </div>
             ${controlHtml}
         </div>
@@ -258,9 +263,7 @@ function updateParamDisplay(key) {
     }
 }
 
-function attachParamListeners() {
-    // seed randomize button could be added
-}
+function attachParamListeners() {}
 
 function collectParameters() {
     const params = {};
@@ -422,7 +425,7 @@ function drawCropOverlay() {
 
 function applyCrop() {
     if (!cropRect || cropRect.w < 10 || cropRect.h < 10) {
-        showToast('Selection too small');
+        showToast(t('msg.selection_small'));
         return;
     }
     const scaleX = cropImg.width / cropCanvas.width;
@@ -445,7 +448,7 @@ function applyCrop() {
         };
         reader.readAsDataURL(selectedFile);
         exitCropMode();
-        showToast('Image cropped');
+        showToast(t('msg.cropped'));
     }, 'image/png');
 }
 
@@ -468,7 +471,7 @@ function resetCrop() {
         document.getElementById('source-preview').src = e.target.result;
     };
     reader.readAsDataURL(selectedFile);
-    showToast('Reverted to original image');
+    showToast(t('msg.reverted'));
 }
 
 // ===== Submit Task =====
@@ -478,31 +481,31 @@ async function submitTask() {
 
     try {
         showProgress();
-        document.getElementById('progress-stage').textContent = 'Uploading image...';
+        document.getElementById('progress-stage').textContent = t('create.uploading');
 
         const formData = new FormData();
         formData.append('file', selectedFile);
         const uploadData = await apiFetch('/tasks/upload', { method: 'POST', body: formData });
         uploadedImageFilename = uploadData.filename;
 
-        document.getElementById('progress-stage').textContent = 'Submitting to queue...';
+        document.getElementById('progress-stage').textContent = t('create.submitting');
         const taskFormData = new FormData();
         taskFormData.append('image_filename', uploadedImageFilename);
         taskFormData.append('parameters', JSON.stringify(params));
         const data = await apiFetch('/tasks', { method: 'POST', body: taskFormData });
 
         startProgressPolling(data.id);
-        showToast('Task submitted to queue!');
+        showToast(t('msg.submitted'));
     } catch (err) {
         hideProgress();
-        showToast('Submit failed: ' + err.message);
+        showToast(t('msg.submit_failed') + err.message);
     }
 }
 
 // ===== Progress =====
 function showProgress() {
     document.getElementById('progress-overlay').style.display = 'flex';
-    document.getElementById('progress-stage').textContent = 'Submitting...';
+    document.getElementById('progress-stage').textContent = t('msg.submitting');
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('progress-step').textContent = '';
 }
@@ -515,32 +518,30 @@ function startProgressPolling(taskId) {
     if (progressInterval) clearInterval(progressInterval);
     progressInterval = setInterval(async () => {
         try {
-            // Check queue status
             const q = await apiFetch('/queue/status');
             if (q.your_position > 0) {
-                document.getElementById('progress-stage').textContent = `In queue: ${q.your_position} task${q.your_position > 1 ? 's' : ''} ahead`;
-                document.getElementById('progress-step').textContent = 'Waiting...';
+                document.getElementById('progress-stage').textContent = t('msg.queue_ahead') + q.your_position + t('msg.queue_ahead_suffix');
+                document.getElementById('progress-step').textContent = t('msg.waiting');
                 document.getElementById('progress-fill').style.width = '0%';
                 return;
             }
 
-            // Check task status
             const task = await apiFetch(`/tasks/${taskId}`);
             if (task.status === 'completed') {
                 clearInterval(progressInterval);
                 hideProgress();
-                showToast('Task completed!');
+                showToast(t('msg.completed'));
                 loadTaskDetail(taskId);
                 return;
             }
             if (task.status === 'failed') {
                 clearInterval(progressInterval);
                 hideProgress();
-                showToast('Task failed: ' + task.error_message);
+                showToast(t('msg.task_failed') + task.error_message);
                 return;
             }
 
-            document.getElementById('progress-stage').textContent = task.progress || 'Processing...';
+            document.getElementById('progress-stage').textContent = task.progress || t('msg.processing');
             if (task.progress_total > 0) {
                 document.getElementById('progress-step').textContent = `${task.progress_step}/${task.progress_total}`;
                 document.getElementById('progress-fill').style.width = Math.min(100, (task.progress_step / task.progress_total) * 100) + '%';
@@ -570,13 +571,12 @@ function startQueuePolling() {
 // ===== Task History =====
 async function loadTaskHistory() {
     try {
-        // Populate user filter for admins if not yet populated
         if (currentUser.role === 'admin') {
             const filterSelect = document.getElementById('filter-user');
             if (filterSelect && filterSelect.options.length <= 1) {
                 try {
                     const users = await apiFetch('/users');
-                    filterSelect.innerHTML = '<option value="">All Users</option>' +
+                    filterSelect.innerHTML = `<option value="">${t('history.all_users')}</option>` +
                         users.map(u => `<option value="${u.id}">${u.username} (#${u.id})</option>`).join('');
                 } catch (e) { /* ignore */ }
             }
@@ -595,27 +595,30 @@ async function loadTaskHistory() {
         const tasks = await apiFetch(path);
         const list = document.getElementById('task-list');
         if (tasks.length === 0) {
-            list.innerHTML = '<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3L2 8l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg><p>No tasks yet. Create one!</p></div>';
+            list.innerHTML = `<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3L2 8l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg><p>${t('history.empty')}</p></div>`;
             return;
         }
-        list.innerHTML = tasks.map(t => `
-            <div class="task-card" onclick="loadTaskDetail(${t.id})">
-                <img class="task-thumb" src="${authUrl('/api/tasks/' + t.id + '/image')}" alt="" onerror="this.style.display='none'">
+        list.innerHTML = tasks.map(task => {
+            const statusBadge = `<span class="status-badge status-${task.status}">${tStatus(task.status)}</span>`;
+            const userLabel = currentUser.role === 'admin' ? ` (${t('history.user')} #${task.user_id})` : '';
+            return `
+            <div class="task-card" onclick="loadTaskDetail(${task.id})">
+                <img class="task-thumb" src="${authUrl('/api/tasks/' + task.id + '/image')}" alt="" onerror="this.style.display='none'">
                 <div class="task-info">
-                    <h4>Task #${t.id}${currentUser.role === 'admin' ? ' (User #' + t.user_id + ')' : ''}</h4>
+                    <h4>Task #${task.id}${userLabel}</h4>
                     <div class="task-meta">
-                        <span class="status-badge status-${t.status}">${t.status}</span>
-                        <span>${new Date(t.created_at).toLocaleString()}</span>
-                        <span>Res: ${t.parameters?.resolution || '-'}</span>
-                        <span>Seed: ${t.parameters?.seed || '-'}</span>
+                        ${statusBadge}
+                        <span>${new Date(task.created_at).toLocaleString()}</span>
+                        <span>${t('history.res')}: ${task.parameters?.resolution || '-'}</span>
+                        <span>${t('history.seed')}: ${task.parameters?.seed || '-'}</span>
                     </div>
-                    ${t.status === 'processing' && t.progress ? `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:0.3rem;">${t.progress} ${t.progress_total > 0 ? '(' + t.progress_step + '/' + t.progress_total + ')' : ''}</div>` : ''}
-                    ${t.status === 'failed' ? `<div style="font-size:0.72rem;color:var(--danger);margin-top:0.3rem;">${t.error_message}</div>` : ''}
+                    ${task.status === 'processing' && task.progress ? `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:0.3rem;">${task.progress} ${task.progress_total > 0 ? '(' + task.progress_step + '/' + task.progress_total + ')' : ''}</div>` : ''}
+                    ${task.status === 'failed' ? `<div style="font-size:0.72rem;color:var(--danger);margin-top:0.3rem;">${task.error_message}</div>` : ''}
                 </div>
             </div>
-        `).join('');
+        `}).join('');
     } catch (err) {
-        showToast('Failed to load tasks: ' + err.message);
+        showToast(t('msg.tasks_failed') + err.message);
     }
 }
 
@@ -630,20 +633,19 @@ async function loadTaskDetail(taskId) {
         const content = document.getElementById('detail-content');
         let html = '';
 
-        // Left: 3D viewer + source image side-by-side, or status
         html += '<div class="detail-section">';
-        html += '<h3>3D Result</h3>';
+        html += `<h3>${t('detail.result')}</h3>`;
         if (task.status === 'completed' && task.output_glb_path) {
             const imgUrl = authUrl('/api/tasks/' + taskId + '/image');
             const glbUrl = authUrl('/api/tasks/' + taskId + '/download');
             html += `
                 <div class="compare-layout">
                     <div class="compare-panel">
-                        <div class="compare-label">Source Image</div>
+                        <div class="compare-label">${t('detail.source_image')}</div>
                         <img class="compare-image" src="${imgUrl}" alt="Source">
                     </div>
                     <div class="compare-panel">
-                        <div class="compare-label">3D Model</div>
+                        <div class="compare-label">${t('detail.3d_model')}</div>
                         <div class="viewer-wrapper">
                             <model-viewer src="${glbUrl}" camera-controls auto-rotate shadow-intensity="1.5" environment-image="neutral" exposure="1.2"></model-viewer>
                         </div>
@@ -652,23 +654,22 @@ async function loadTaskDetail(taskId) {
                 <div style="display:flex;gap:0.5rem;margin-top:0.75rem;">
                     <a href="${glbUrl}" download class="btn btn-primary btn-sm">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                        Download GLB
+                        ${t('detail.download_glb')}
                     </a>
-                    <button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">Delete</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button>
                 </div>
             `;
         } else if (task.status === 'failed') {
-            html += `<div class="empty-state" style="padding:2rem;"><p style="color:var(--danger)">Task failed: ${task.error_message}</p></div>`;
+            html += `<div class="empty-state" style="padding:2rem;"><p style="color:var(--danger)">${t('detail.task_failed')}${task.error_message}</p></div>`;
         } else if (task.status === 'processing') {
-            html += `<div class="empty-state" style="padding:2rem;"><div class="loader-ring" style="margin:0 auto 1rem;"></div><p>Processing: ${task.progress}</p></div>`;
+            html += `<div class="empty-state" style="padding:2rem;"><div class="loader-ring" style="margin:0 auto 1rem;"></div><p>${t('detail.processing')}${task.progress}</p></div>`;
         } else {
-            html += `<div class="empty-state" style="padding:2rem;"><p>Task is ${task.status}</p></div>`;
+            html += `<div class="empty-state" style="padding:2rem;"><p>${t('detail.task_is')}${tStatus(task.status)}</p></div>`;
         }
         html += '</div>';
 
-        // Right: info + renders + params
         html += '<div class="detail-section">';
-        html += '<h3>Preview Renders</h3>';
+        html += `<h3>${t('detail.renders')}</h3>`;
         if (task.render_paths && Object.keys(task.render_paths).length > 0) {
             for (const [mode, frames] of Object.entries(task.render_paths)) {
                 html += `<div style="margin-bottom:0.75rem;"><div style="font-size:0.75rem;color:var(--text-dim);margin-bottom:0.3rem;">${mode}</div><div class="render-gallery">`;
@@ -678,14 +679,14 @@ async function loadTaskDetail(taskId) {
                 html += '</div></div>';
             }
         } else {
-            html += '<p style="color:var(--text-dim);font-size:0.8rem;">No renders available</p>';
+            html += `<p style="color:var(--text-dim);font-size:0.8rem;">${t('detail.no_renders')}</p>`;
         }
 
-        html += '<h3 style="margin-top:1.5rem;">Parameters</h3>';
+        html += `<h3 style="margin-top:1.5rem;">${t('detail.params')}</h3>`;
         html += '<div class="param-summary">';
         if (task.camera_angle_x) {
-            html += `<span class="key">FOV</span><span class="val">${task.camera_angle_x}</span>`;
-            html += `<span class="key">Distance</span><span class="val">${task.camera_distance}</span>`;
+            html += `<span class="key">${t('detail.fov')}</span><span class="val">${task.camera_angle_x}</span>`;
+            html += `<span class="key">${t('detail.distance')}</span><span class="val">${task.camera_distance}</span>`;
         }
         if (task.parameters) {
             for (const [k, v] of Object.entries(task.parameters)) {
@@ -697,24 +698,23 @@ async function loadTaskDetail(taskId) {
 
         content.innerHTML = html;
 
-        // If processing, keep refreshing
         if (task.status === 'processing' || task.status === 'queued') {
             setTimeout(() => { if (currentDetailView === taskId) loadTaskDetail(taskId); }, 3000);
         }
     } catch (err) {
-        showToast('Failed to load task: ' + err.message);
+        showToast(t('msg.task_failed_load') + err.message);
     }
 }
 
 async function deleteTask(taskId) {
-    if (!confirm('Delete this task?')) return;
+    if (!confirm(t('msg.delete_task'))) return;
     try {
         await apiFetch(`/tasks/${taskId}`, { method: 'DELETE' });
-        showToast('Task deleted');
+        showToast(t('msg.task_deleted'));
         navigateTo('history');
         loadTaskHistory();
     } catch (err) {
-        showToast('Delete failed: ' + err.message);
+        showToast(t('msg.delete_failed') + err.message);
     }
 }
 
@@ -723,11 +723,10 @@ async function loadAdminUsers() {
     try {
         const users = await apiFetch('/users');
 
-        // Populate user filter dropdown
         const filterSelect = document.getElementById('filter-user');
         if (filterSelect) {
             const currentVal = filterSelect.value;
-            filterSelect.innerHTML = '<option value="">All Users</option>' +
+            filterSelect.innerHTML = `<option value="">${t('history.all_users')}</option>` +
                 users.map(u => `<option value="${u.id}">${u.username} (#${u.id})</option>`).join('');
             filterSelect.value = currentVal;
         }
@@ -747,21 +746,20 @@ async function loadAdminUsers() {
                 <td>
                     <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
                         <input type="checkbox" ${u.is_active ? 'checked' : ''} onchange="toggleUserActive(${u.id}, this.checked)" style="accent-color:var(--accent);" ${u.username === currentUser.username ? 'disabled' : ''}>
-                        ${u.is_active ? 'Yes' : 'No'}
+                        ${u.is_active ? t('admin.yes') : t('admin.no')}
                     </label>
                 </td>
                 <td>${new Date(u.created_at).toLocaleDateString()}</td>
                 <td>
-                    ${u.username === currentUser.username ? '' : `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id})">Delete</button>`}
+                    ${u.username === currentUser.username ? '' : `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id})">${t('admin.delete')}</button>`}
                 </td>
             </tr>
         `).join('');
     } catch (err) {
-        showToast('Failed to load users: ' + err.message);
+        showToast(t('msg.users_failed') + err.message);
     }
 }
 
-// Create user form
 const createUserForm = document.getElementById('create-user-form');
 if (createUserForm) {
     createUserForm.onsubmit = async (e) => {
@@ -781,7 +779,7 @@ if (createUserForm) {
             document.getElementById('new-user-username').value = '';
             document.getElementById('new-user-email').value = '';
             document.getElementById('new-user-password').value = '';
-            showToast('User created successfully');
+            showToast(t('msg.user_created'));
             loadAdminUsers();
         } catch (err) {
             errEl.textContent = err.message;
@@ -792,9 +790,9 @@ if (createUserForm) {
 async function updateUserRole(userId, role) {
     try {
         await apiFetch(`/users/${userId}/role?role=${role}`, { method: 'PATCH' });
-        showToast('Role updated');
+        showToast(t('msg.role_updated'));
     } catch (err) {
-        showToast('Update failed: ' + err.message);
+        showToast(t('msg.update_failed') + err.message);
         loadAdminUsers();
     }
 }
@@ -802,21 +800,21 @@ async function updateUserRole(userId, role) {
 async function toggleUserActive(userId, isActive) {
     try {
         await apiFetch(`/users/${userId}/active?is_active=${isActive}`, { method: 'PATCH' });
-        showToast('User updated');
+        showToast(t('msg.user_updated'));
     } catch (err) {
-        showToast('Update failed: ' + err.message);
+        showToast(t('msg.update_failed') + err.message);
         loadAdminUsers();
     }
 }
 
 async function deleteUser(userId) {
-    if (!confirm('Delete this user and all their tasks?')) return;
+    if (!confirm(t('msg.delete_user'))) return;
     try {
         await apiFetch(`/users/${userId}`, { method: 'DELETE' });
-        showToast('User deleted');
+        showToast(t('msg.user_deleted'));
         loadAdminUsers();
     } catch (err) {
-        showToast('Delete failed: ' + err.message);
+        showToast(t('msg.delete_failed') + err.message);
     }
 }
 
