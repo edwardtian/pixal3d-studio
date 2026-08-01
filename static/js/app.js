@@ -17,6 +17,10 @@ let cropCanvas = null;
 let cropCtx = null;
 let cropImg = null;
 
+// Compare state
+let selectedTaskIds = new Set();
+let compareSyncActive = false;
+
 const API = '/api';
 
 // ===== API helpers =====
@@ -80,10 +84,14 @@ function showMainApp() {
     applyTranslations();
 
     const badge = document.getElementById('user-badge');
-    badge.textContent = currentUser.username;
+    const displayName = currentUser.username.length > 8
+        ? currentUser.username.slice(0, 8) + '…'
+        : currentUser.username;
+    badge.textContent = displayName;
+    badge.title = currentUser.username;
     badge.classList.toggle('admin', currentUser.role === 'admin');
     if (currentUser.role === 'admin') {
-        badge.textContent += t('auth.admin_suffix');
+        badge.textContent = displayName + t('auth.admin_suffix');
         document.getElementById('admin-nav-btn').style.display = 'flex';
     }
 
@@ -151,6 +159,7 @@ function navigateTo(view) {
 
     if (view === 'history') loadTaskHistory();
     if (view === 'admin') loadAdminUsers();
+    if (view === 'compare') loadCompareView();
 }
 
 // ===== Parameters =====
@@ -594,17 +603,31 @@ async function loadTaskHistory() {
 
         const tasks = await apiFetch(path);
         const list = document.getElementById('task-list');
+
+        // Compare bar
+        let barHtml = `<div class="compare-bar">
+            <button class="btn btn-primary btn-sm" onclick="navigateTo('compare')" id="compare-btn" disabled>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>
+                <span data-i18n="history.compare_selected">${t('history.compare_selected')}</span>
+            </button>
+            <span id="select-count" style="font-size:0.8rem;color:var(--text-dim);">0 ${t('history.selected_count')}</span>
+            <span style="font-size:0.72rem;color:var(--text-dim);">${t('history.max_select')}</span>
+        </div>`;
+
         if (tasks.length === 0) {
-            list.innerHTML = `<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3L2 8l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg><p>${t('history.empty')}</p></div>`;
+            list.innerHTML = barHtml + `<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3L2 8l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg><p>${t('history.empty')}</p></div>`;
             return;
         }
-        list.innerHTML = tasks.map(task => {
+        list.innerHTML = barHtml + tasks.map(task => {
             const statusBadge = `<span class="status-badge status-${task.status}">${tStatus(task.status)}</span>`;
             const userLabel = currentUser.role === 'admin' ? ` (${t('history.user')} #${task.user_id})` : '';
+            const canSelect = task.status === 'completed' && task.output_glb_path;
+            const isSelected = selectedTaskIds.has(task.id);
             return `
-            <div class="task-card" onclick="loadTaskDetail(${task.id})">
-                <img class="task-thumb" src="${authUrl('/api/tasks/' + task.id + '/image')}" alt="" onerror="this.style.display='none'">
-                <div class="task-info">
+            <div class="task-card" style="${canSelect ? '' : 'opacity:0.6;'}">
+                <input type="checkbox" class="task-select" ${canSelect ? '' : 'disabled'} ${isSelected ? 'checked' : ''} onchange="toggleSelectTask(${task.id}, this.checked)" onclick="event.stopPropagation()">
+                <img class="task-thumb" src="${authUrl('/api/tasks/' + task.id + '/image')}" alt="" onerror="this.style.display='none'" onclick="loadTaskDetail(${task.id})" style="cursor:pointer;">
+                <div class="task-info" onclick="loadTaskDetail(${task.id})" style="cursor:pointer;">
                     <h4>Task #${task.id}${userLabel}</h4>
                     <div class="task-meta">
                         ${statusBadge}
@@ -617,9 +640,142 @@ async function loadTaskHistory() {
                 </div>
             </div>
         `}).join('');
+        updateSelectCount();
     } catch (err) {
         showToast(t('msg.tasks_failed') + err.message);
     }
+}
+
+// ===== Task Selection for Compare =====
+function toggleSelectTask(taskId, checked) {
+    if (checked) {
+        if (selectedTaskIds.size >= 8) {
+            showToast(t('history.max_select'));
+            event.target.checked = false;
+            return;
+        }
+        selectedTaskIds.add(taskId);
+    } else {
+        selectedTaskIds.delete(taskId);
+    }
+    updateSelectCount();
+}
+
+function updateSelectCount() {
+    const countEl = document.getElementById('select-count');
+    const btn = document.getElementById('compare-btn');
+    if (countEl) countEl.textContent = `${selectedTaskIds.size} ${t('history.selected_count')}`;
+    if (btn) btn.disabled = selectedTaskIds.size < 2;
+}
+
+// ===== Compare View =====
+async function loadCompareView() {
+    const content = document.getElementById('compare-content');
+    const info = document.getElementById('compare-info');
+
+    if (selectedTaskIds.size < 2) {
+        content.innerHTML = `<div class="compare-empty"><p>${t('history.select')} ≥ 2</p></div>`;
+        if (info) info.textContent = '';
+        return;
+    }
+
+    if (info) info.textContent = `${selectedTaskIds.size} ${t('history.selected_count')}`;
+
+    // Fetch all selected tasks
+    const tasks = [];
+    for (const id of selectedTaskIds) {
+        try {
+            const task = await apiFetch(`/tasks/${id}`);
+            if (task.status === 'completed' && task.output_glb_path) {
+                tasks.push(task);
+            }
+        } catch (e) { /* skip */ }
+    }
+
+    if (tasks.length < 2) {
+        content.innerHTML = `<div class="compare-empty"><p>${t('history.select')} ≥ 2</p></div>`;
+        return;
+    }
+
+    content.innerHTML = tasks.map(task => {
+        const glbUrl = authUrl('/api/tasks/' + task.id + '/download');
+        const imgUrl = authUrl('/api/tasks/' + task.id + '/image');
+        return `
+        <div class="compare-item">
+            <div class="compare-item-header">
+                <h4>Task #${task.id}</h4>
+                <div class="compare-item-meta">
+                    ${t('history.res')}: ${task.parameters?.resolution || '-'} ·
+                    ${t('history.seed')}: ${task.parameters?.seed || '-'}
+                </div>
+            </div>
+            <model-viewer
+                src="${glbUrl}"
+                camera-controls
+                shadow-intensity="1.5"
+                environment-image="neutral"
+                exposure="1.2"
+                data-compare-mv
+            ></model-viewer>
+        </div>
+        `;
+    }).join('');
+
+    // Set up camera sync after model-viewers are loaded
+    setupCompareSync();
+}
+
+function setupCompareSync() {
+    const viewers = document.querySelectorAll('[data-compare-mv]');
+    const initialOrbit = new Map();
+    const initialTarget = new Map();
+
+    function recordInitial(mv) {
+        try {
+            const o = mv.getCameraOrbit();
+            const tg = mv.getCameraTarget();
+            if (o.radius > 0 && !initialOrbit.has(mv)) {
+                initialOrbit.set(mv, o);
+                initialTarget.set(mv, tg);
+            }
+        } catch (e) { /* not ready yet */ }
+    }
+
+    viewers.forEach(mv => {
+        mv.addEventListener('load', () => setTimeout(() => recordInitial(mv), 200));
+        setTimeout(() => recordInitial(mv), 500);
+    });
+
+    viewers.forEach(mv => {
+        mv.addEventListener('camera-change', () => {
+            if (compareSyncActive) return;
+            compareSyncActive = true;
+
+            const orbit = mv.getCameraOrbit();
+            const target = mv.getCameraTarget();
+            const srcInitR = initialOrbit.get(mv)?.radius || orbit.radius;
+            const srcInitT = initialTarget.get(mv) || { x: 0, y: 0, z: 0 };
+            const zoomRatio = orbit.radius / srcInitR;
+            const panOffsetX = (target.x - srcInitT.x) / srcInitR;
+            const panOffsetY = (target.y - srcInitT.y) / srcInitR;
+            const panOffsetZ = (target.z - srcInitT.z) / srcInitR;
+
+            viewers.forEach(other => {
+                if (other === mv) return;
+                const otherInitR = initialOrbit.get(other)?.radius || orbit.radius;
+                const otherInitT = initialTarget.get(other) || { x: 0, y: 0, z: 0 };
+                const otherRadius = otherInitR * zoomRatio;
+                const otherTargetX = otherInitT.x + panOffsetX * otherInitR;
+                const otherTargetY = otherInitT.y + panOffsetY * otherInitR;
+                const otherTargetZ = otherInitT.z + panOffsetZ * otherInitR;
+                other.cameraOrbit = `${(orbit.theta * 180 / Math.PI).toFixed(2)}deg ${(orbit.phi * 180 / Math.PI).toFixed(2)}deg ${otherRadius.toFixed(4)}m`;
+                other.cameraTarget = `${otherTargetX.toFixed(4)}m ${otherTargetY.toFixed(4)}m ${otherTargetZ.toFixed(4)}m`;
+                other.jumpCameraToGoal();
+            });
+
+            requestAnimationFrame(() => { compareSyncActive = false; });
+        });
+    });
 }
 
 // ===== Task Detail =====
@@ -633,6 +789,7 @@ async function loadTaskDetail(taskId) {
         const content = document.getElementById('detail-content');
         let html = '';
 
+        // Main: 3D Result (takes most space)
         html += '<div class="detail-section">';
         html += `<h3>${t('detail.result')}</h3>`;
         if (task.status === 'completed' && task.output_glb_path) {
@@ -646,16 +803,20 @@ async function loadTaskDetail(taskId) {
                     </div>
                     <div class="compare-panel">
                         <div class="compare-label">${t('detail.3d_model')}</div>
-                        <div class="viewer-wrapper">
+                        <div class="viewer-wrapper" id="viewer-wrapper">
                             <model-viewer src="${glbUrl}" camera-controls auto-rotate shadow-intensity="1.5" environment-image="neutral" exposure="1.2"></model-viewer>
                         </div>
                     </div>
                 </div>
-                <div style="display:flex;gap:0.5rem;margin-top:0.75rem;">
+                <div class="viewer-toolbar">
                     <a href="${glbUrl}" download class="btn btn-primary btn-sm">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         ${t('detail.download_glb')}
                     </a>
+                    <button class="btn btn-outline btn-sm" onclick="toggleFullscreen()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                        <span id="fs-btn-label">${t('detail.fullscreen')}</span>
+                    </button>
                     <button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button>
                 </div>
             `;
@@ -668,8 +829,13 @@ async function loadTaskDetail(taskId) {
         }
         html += '</div>';
 
+        // Below: Preview Renders (collapsible, folded by default) + Parameters
         html += '<div class="detail-section">';
-        html += `<h3>${t('detail.renders')}</h3>`;
+        html += `<h3 class="collapse-header" onclick="toggleRenders()">
+            <span class="collapse-arrow" id="renders-arrow">&#9654;</span>
+            <span id="renders-toggle-text">${t('detail.expand_renders')}</span>
+        </h3>`;
+        html += '<div class="collapse-content" id="renders-content">';
         if (task.render_paths && Object.keys(task.render_paths).length > 0) {
             for (const [mode, frames] of Object.entries(task.render_paths)) {
                 html += `<div style="margin-bottom:0.75rem;"><div style="font-size:0.75rem;color:var(--text-dim);margin-bottom:0.3rem;">${mode}</div><div class="render-gallery">`;
@@ -694,7 +860,8 @@ async function loadTaskDetail(taskId) {
             }
         }
         html += '</div>';
-        html += '</div>';
+        html += '</div>'; // end collapse-content
+        html += '</div>'; // end detail-section
 
         content.innerHTML = html;
 
@@ -704,6 +871,24 @@ async function loadTaskDetail(taskId) {
     } catch (err) {
         showToast(t('msg.task_failed_load') + err.message);
     }
+}
+
+function toggleFullscreen() {
+    const wrapper = document.getElementById('viewer-wrapper');
+    if (!wrapper) return;
+    const isFs = wrapper.classList.toggle('viewer-fullscreen');
+    const label = document.getElementById('fs-btn-label');
+    if (label) label.textContent = isFs ? t('detail.exit_fullscreen') : t('detail.fullscreen');
+}
+
+function toggleRenders() {
+    const content = document.getElementById('renders-content');
+    const arrow = document.getElementById('renders-arrow');
+    const text = document.getElementById('renders-toggle-text');
+    if (!content) return;
+    const isOpen = content.classList.toggle('open');
+    if (arrow) arrow.classList.toggle('open', isOpen);
+    if (text) text.textContent = isOpen ? t('detail.collapse_renders') : t('detail.expand_renders');
 }
 
 async function deleteTask(taskId) {

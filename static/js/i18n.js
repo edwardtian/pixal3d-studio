@@ -13,6 +13,7 @@ const I18N = {
         'nav.task_history': 'Task History',
         'nav.user_management': 'User Management',
         'nav.logout': 'Logout',
+        'nav.compare': 'Compare',
         'queue.label': 'Queue',
         'create.upload_title': 'Upload an image',
         'create.upload_hint': 'Drag & drop or click to browse',
@@ -33,6 +34,10 @@ const I18N = {
         'history.res': 'Res',
         'history.seed': 'Seed',
         'history.user': 'User',
+        'history.select': 'Select',
+        'history.compare_selected': 'Compare Selected',
+        'history.selected_count': 'selected',
+        'history.max_select': 'Maximum 8 models can be selected',
         'detail.back': 'Back',
         'detail.result': '3D Result',
         'detail.source_image': 'Source Image',
@@ -47,6 +52,10 @@ const I18N = {
         'detail.task_failed': 'Task failed: ',
         'detail.processing': 'Processing: ',
         'detail.task_is': 'Task is ',
+        'detail.fullscreen': 'Fullscreen',
+        'detail.exit_fullscreen': 'Exit Fullscreen',
+        'detail.expand_renders': 'Show Preview Renders',
+        'detail.collapse_renders': 'Hide Preview Renders',
         'admin.title': 'User Management',
         'admin.create_user': 'Create New User',
         'admin.username': 'Username',
@@ -104,6 +113,7 @@ const I18N = {
         'nav.task_history': '任务历史',
         'nav.user_management': '用户管理',
         'nav.logout': '退出登录',
+        'nav.compare': '对比',
         'queue.label': '队列',
         'create.upload_title': '上传图片',
         'create.upload_hint': '拖拽或点击选择文件',
@@ -124,6 +134,10 @@ const I18N = {
         'history.res': '分辨率',
         'history.seed': '种子',
         'history.user': '用户',
+        'history.select': '选择',
+        'history.compare_selected': '对比已选',
+        'history.selected_count': '已选',
+        'history.max_select': '最多可选8个模型',
         'detail.back': '返回',
         'detail.result': '3D结果',
         'detail.source_image': '原图',
@@ -138,6 +152,10 @@ const I18N = {
         'detail.task_failed': '任务失败：',
         'detail.processing': '处理中：',
         'detail.task_is': '任务状态：',
+        'detail.fullscreen': '全屏',
+        'detail.exit_fullscreen': '退出全屏',
+        'detail.expand_renders': '显示预览渲染',
+        'detail.collapse_renders': '隐藏预览渲染',
         'admin.title': '用户管理',
         'admin.create_user': '创建新用户',
         'admin.username': '用户名',
@@ -285,6 +303,7 @@ function setLang(lang) {
         renderParameters();
         if (document.getElementById('view-history').classList.contains('active')) loadTaskHistory();
         if (document.getElementById('view-admin').classList.contains('active')) loadAdminUsers();
+        if (document.getElementById('view-compare').classList.contains('active')) loadCompareView();
         if (currentDetailView) loadTaskDetail(currentDetailView);
     }
 }
