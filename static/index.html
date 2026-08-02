@@ -231,6 +231,15 @@
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+<!-- Compare Fullscreen Overlay -->
+<div class="compare-fs-overlay" id="compare-fs-overlay">
+    <div class="compare-fs-toolbar">
+        <button class="btn btn-outline btn-sm" onclick="toggleCompareLayout()">${''}<span id="fs-layout-label"></span></button>
+        <button class="btn btn-outline btn-sm" onclick="toggleCompareFs()">Exit</button>
+    </div>
+    <div class="compare-fs-content"></div>
+</div>
+
 <script src="/static/js/i18n.js"></script>
 <script src="/static/js/app.js"></script>
 </body>

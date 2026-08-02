@@ -20,11 +20,20 @@ let cropImg = null;
 // Compare state
 let selectedTaskIds = new Set();
 let compareSyncActive = false;
+let compareFsActive = false;
+let compareLayout = 'vertical';
 
 // Preset & copied params state
 let copiedParams = null;
 let presetList = [];
 let currentDetailParams = null;
+
+// Re-submit state
+let sourceParams = null;
+let sourceImageFilename = null;
+
+// Zoom state for source image
+let imgZoom = 1, imgPanX = 0, imgPanY = 0, imgDragging = false, imgLastX = 0, imgLastY = 0;
 
 const API = '/api';
 
@@ -163,10 +172,11 @@ function navigateTo(view) {
     const viewEl = document.getElementById('view-' + view);
     if (viewEl) viewEl.classList.add('active');
 
-    // Update nav button highlight
+    // Update nav button highlight — 'detail' keeps 'history' highlighted
+    const navTarget = view === 'detail' ? 'history' : view;
     document.querySelectorAll('.sidebar .btn-full').forEach(btn => {
         const target = btn.dataset.navTarget;
-        if (target === view) {
+        if (target === navTarget) {
             btn.classList.remove('btn-outline');
             btn.classList.add('btn-primary');
         } else if (target) {
@@ -210,8 +220,10 @@ function renderParameters() {
         <button class="btn btn-outline btn-sm" onclick="savePresetPrompt()" data-i18n="create.save_preset">${t('create.save_preset')}</button>
     </div>`;
 
-    // Copied params indicator
-    if (copiedParams) {
+    // Copied/re-submit params indicator
+    if (sourceParams) {
+        html += `<div style="font-size:0.72rem;color:var(--accent);margin-bottom:0.75rem;">${t('detail.params_copied')}</div>`;
+    } else if (copiedParams) {
         html += `<div style="font-size:0.72rem;color:var(--accent);margin-bottom:0.75rem;">${t('detail.params_copied')}</div>`;
     }
 
@@ -227,9 +239,13 @@ function renderParameters() {
     attachParamListeners();
     refreshPresetDropdown();
 
-    // If copied params exist, apply them
-    if (copiedParams) {
-        applyParamsToUI(copiedParams);
+    // Apply copied or source params
+    const paramsToApply = sourceParams || copiedParams;
+    if (paramsToApply) {
+        applyParamsToUI(paramsToApply);
+        if (sourceParams) {
+            setupParamChangeTracking();
+        }
         copiedParams = null;
     }
 }
@@ -259,7 +275,7 @@ function renderParamItem(p) {
 
     if (p.key === 'manual_fov') {
         return `
-            <div class="param-item">
+            <div class="param-item" id="param-item-${p.key}">
                 <div class="param-label-row">
                     <span class="param-label">${label} ${tooltipHtml}</span>
                     <label style="display:flex;align-items:center;gap:4px;font-size:0.75rem;color:var(--text-dim);cursor:pointer;">
@@ -279,7 +295,7 @@ function renderParamItem(p) {
     if (p.key === 'fov_unit') return '';
 
     return `
-        <div class="param-item">
+        <div class="param-item" id="param-item-${p.key}">
             <div class="param-label-row">
                 <span class="param-label">${label} ${tooltipHtml}</span>
             </div>
@@ -311,7 +327,50 @@ function updateParamDisplay(key) {
     }
 }
 
-function attachParamListeners() {}
+function attachParamListeners() {
+    // Add change listeners for re-submit tracking
+    if (sourceParams) {
+        setupParamChangeTracking();
+    }
+}
+
+function setupParamChangeTracking() {
+    const onChange = () => checkParamDiff();
+    document.querySelectorAll('#param-panel input, #param-panel select').forEach(el => {
+        el.addEventListener('input', onChange);
+        el.addEventListener('change', onChange);
+    });
+    checkParamDiff();
+}
+
+function checkParamDiff() {
+    if (!sourceParams) return;
+    const current = collectParameters();
+    let hasDiff = false;
+    for (const key of Object.keys(parameterDefs)) {
+        const item = document.getElementById('param-item-' + key);
+        if (!item) continue;
+        const srcVal = sourceParams[key];
+        const curVal = current[key];
+        const diff = JSON.stringify(srcVal) !== JSON.stringify(curVal);
+        item.classList.toggle('param-changed', diff);
+        if (diff) hasDiff = true;
+    }
+    // Also check FOV auto toggle
+    const fovAuto = document.getElementById('fov-auto');
+    if (fovAuto) {
+        const fovItem = document.getElementById('param-item-manual_fov');
+        if (fovItem) {
+            const wasAuto = sourceParams['manual_fov'] < 0;
+            const isAuto = fovAuto.checked;
+            const diff = wasAuto !== isAuto;
+            fovItem.classList.toggle('param-changed', diff);
+            if (diff) hasDiff = true;
+        }
+    }
+    const submitBtn = document.getElementById('submit-btn');
+    if (submitBtn) submitBtn.disabled = !hasDiff;
+}
 
 function collectParameters() {
     const params = {};
@@ -410,6 +469,7 @@ function applyPresetFromDropdown() {
         applyParamsToUI(preset.parameters);
         showToast(t('preset.applied') + ': ' + preset.name);
         sel.value = '';
+        if (sourceParams) checkParamDiff();
     }
 }
 
@@ -514,12 +574,45 @@ async function applyDefaultPreset() {
     } catch (e) { /* ignore */ }
 }
 
-// ===== Copy Params =====
+// ===== Copy Params & Re-submit =====
 function copyParamsFromTask(params) {
     copiedParams = { ...params };
+    sourceParams = null;
+    sourceImageFilename = null;
     navigateTo('create');
     renderParameters();
     showToast(t('detail.params_copied'));
+}
+
+async function resubmitTask(taskId) {
+    try {
+        const task = await apiFetch(`/tasks/${taskId}`);
+        sourceParams = { ...task.parameters };
+        // Fetch the source image and set it as selectedFile
+        const imgResp = await fetch(authUrl('/api/tasks/' + taskId + '/image'));
+        const blob = await imgResp.blob();
+        selectedFile = new File([blob], 'resubmit.png', { type: blob.type });
+        originalFile = selectedFile;
+        uploadedImageFilename = null;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const preview = document.getElementById('source-preview');
+            if (preview) {
+                preview.src = e.target.result;
+                preview.style.display = 'block';
+            }
+            const hint = document.getElementById('upload-hint');
+            if (hint) hint.style.display = 'none';
+        };
+        reader.readAsDataURL(selectedFile);
+        const cropToolbar = document.getElementById('crop-toolbar');
+        if (cropToolbar) cropToolbar.style.display = 'flex';
+        navigateTo('create');
+        renderParameters();
+        showToast(t('detail.params_copied'));
+    } catch (err) {
+        showToast(t('msg.task_failed_load') + err.message);
+    }
 }
 
 // ===== Rating =====
@@ -530,8 +623,7 @@ async function setTaskRating(taskId, rating) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ rating })
         });
-        // Update star display in place
-        const container = document.querySelector('.star-rating');
+        const container = document.querySelector('.star-rating[data-task="' + taskId + '"]');
         if (container) {
             container.innerHTML = '';
             for (let i = 1; i <= 5; i++) {
@@ -549,7 +641,7 @@ async function setTaskRating(taskId, rating) {
 }
 
 function renderStarRating(taskId, rating) {
-    let html = '<div class="star-rating">';
+    let html = `<div class="star-rating" data-task="${taskId}">`;
     for (let i = 1; i <= 5; i++) {
         const filled = i <= rating ? 'filled' : '';
         html += `<span class="star ${filled}" onclick="setTaskRating(${taskId}, ${i})" title="${i}">&#9733;</span>`;
@@ -568,12 +660,18 @@ uploadZone.ondrop = (e) => {
     e.preventDefault();
     if (e.dataTransfer.files.length) handleFileUpload(e.dataTransfer.files[0]);
 };
-fileInput.onchange = (e) => { if (e.target.files.length) handleFileUpload(e.target.files[0]); };
+fileInput.onchange = (e) => {
+    if (e.target.files.length) handleFileUpload(e.target.files[0]);
+    // Reset source tracking when user manually selects a new file
+    sourceParams = null;
+    sourceImageFilename = null;
+};
 
 async function handleFileUpload(file) {
     selectedFile = file;
     originalFile = file;
     uploadedImageFilename = null;
+    // Don't reset sourceParams here (resubmit sets file before calling this)
     const reader = new FileReader();
     reader.onload = (e) => {
         const preview = document.getElementById('source-preview');
@@ -587,7 +685,8 @@ async function handleFileUpload(file) {
     reader.readAsDataURL(file);
     const cropToolbar = document.getElementById('crop-toolbar');
     if (cropToolbar) cropToolbar.style.display = 'flex';
-    document.getElementById('submit-btn').disabled = false;
+    const submitBtn = document.getElementById('submit-btn');
+    if (submitBtn) submitBtn.disabled = false;
 }
 
 // ===== Image Cropping =====
@@ -702,6 +801,7 @@ function applyCrop() {
         reader.readAsDataURL(selectedFile);
         exitCropMode();
         showToast(t('msg.cropped'));
+        if (sourceParams) checkParamDiff();
     }, 'image/png');
 }
 
@@ -749,6 +849,8 @@ async function submitTask() {
 
         startProgressPolling(data.id);
         showToast(t('msg.submitted'));
+        // Clear re-submit state after successful submission
+        sourceParams = null;
     } catch (err) {
         hideProgress();
         showToast(t('msg.submit_failed') + err.message);
@@ -821,6 +923,48 @@ function startQueuePolling() {
     queueInterval = setInterval(poll, 3000);
 }
 
+// ===== Zoomable Image =====
+function setupImageZoom(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const img = container.querySelector('img');
+    if (!img) return;
+
+    imgZoom = 1; imgPanX = 0; imgPanY = 0;
+    updateImgTransform(img);
+
+    container.onwheel = (e) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        imgZoom = Math.max(1, Math.min(5, imgZoom * delta));
+        if (imgZoom === 1) { imgPanX = 0; imgPanY = 0; }
+        updateImgTransform(img);
+    };
+
+    container.onmousedown = (e) => {
+        if (imgZoom <= 1) return;
+        imgDragging = true;
+        imgLastX = e.clientX;
+        imgLastY = e.clientY;
+    };
+
+    container.onmousemove = (e) => {
+        if (!imgDragging) return;
+        imgPanX += e.clientX - imgLastX;
+        imgPanY += e.clientY - imgLastY;
+        imgLastX = e.clientX;
+        imgLastY = e.clientY;
+        updateImgTransform(img);
+    };
+
+    container.onmouseup = () => { imgDragging = false; };
+    container.onmouseleave = () => { imgDragging = false; };
+}
+
+function updateImgTransform(img) {
+    img.style.transform = `translate(${imgPanX}px, ${imgPanY}px) scale(${imgZoom})`;
+}
+
 // ===== Task History =====
 async function loadTaskHistory() {
     try {
@@ -848,7 +992,6 @@ async function loadTaskHistory() {
         const tasks = await apiFetch(path);
         const list = document.getElementById('task-list');
 
-        // Compare bar
         let barHtml = `<div class="compare-bar">
             <button class="btn btn-primary btn-sm" onclick="navigateTo('compare')" id="compare-btn" disabled>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>
@@ -915,6 +1058,8 @@ function updateSelectCount() {
 }
 
 // ===== Compare View =====
+let compareTasks = [];
+
 async function loadCompareView() {
     const content = document.getElementById('compare-content');
     const info = document.getElementById('compare-info');
@@ -927,29 +1072,68 @@ async function loadCompareView() {
 
     if (info) info.textContent = `${selectedTaskIds.size} ${t('history.selected_count')}`;
 
-    // Fetch all selected tasks
-    const tasks = [];
+    compareTasks = [];
     for (const id of selectedTaskIds) {
         try {
             const task = await apiFetch(`/tasks/${id}`);
             if (task.status === 'completed' && task.output_glb_path) {
-                tasks.push(task);
+                compareTasks.push(task);
             }
         } catch (e) { /* skip */ }
     }
 
-    if (tasks.length < 2) {
+    if (compareTasks.length < 2) {
         content.innerHTML = `<div class="compare-empty"><p>${t('history.select')} ≥ 2</p></div>`;
         return;
     }
 
-    content.innerHTML = tasks.map(task => {
+    renderCompareContent(content);
+    setupCompareSync();
+}
+
+function renderCompareContent(content) {
+    let html = '';
+
+    // Toolbar
+    html += `<div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+        <button class="btn btn-outline btn-sm" onclick="toggleCompareFs()">${t('compare.fullscreen')}</button>
+        <button class="btn btn-outline btn-sm" onclick="toggleCompareLayout()">${compareLayout === 'vertical' ? t('compare.layout_h') : t('compare.layout_v')}</button>
+        <button class="btn btn-outline btn-sm" onclick="toggleCompareParams()">${t('compare.show_params')}</button>
+    </div>`;
+
+    // Params comparison (hidden by default)
+    html += `<div id="compare-params-section" style="display:none;margin-bottom:1rem;">`;
+    html += `<div class="detail-section"><h3>${t('compare.params_compare')}</h3>`;
+    html += `<div style="overflow-x:auto;"><table class="params-compare-table"><thead><tr><th>Param</th>`;
+    compareTasks.forEach(task => { html += `<th>Task #${task.id}</th>`; });
+    html += `</tr></thead><tbody>`;
+    if (compareTasks.length > 0 && compareTasks[0].parameters) {
+        const allKeys = Object.keys(compareTasks[0].parameters);
+        for (const key of allKeys) {
+            html += `<tr><td>${key}</td>`;
+            const vals = compareTasks.map(t => t.parameters?.[key]);
+            const allSame = vals.every(v => JSON.stringify(v) === JSON.stringify(vals[0]));
+            compareTasks.forEach((task, i) => {
+                const cls = (!allSame && i > 0 && JSON.stringify(vals[i]) !== JSON.stringify(vals[0])) ? 'param-diff' : '';
+                html += `<td class="${cls}">${vals[i] ?? '-'}</td>`;
+            });
+            html += `</tr>`;
+        }
+    }
+    html += `</tbody></table></div></div></div>`;
+
+    // Model viewers
+    html += `<div id="compare-models" class="${compareLayout === 'horizontal' ? 'compare-horizontal-list' : ''}">`;
+    compareTasks.forEach(task => {
         const glbUrl = authUrl('/api/tasks/' + task.id + '/download');
-        const imgUrl = authUrl('/api/tasks/' + task.id + '/image');
-        return `
+        html += `
         <div class="compare-item">
             <div class="compare-item-header">
-                <h4>Task #${task.id}</h4>
+                <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+                    <h4>Task #${task.id}</h4>
+                    ${renderStarRating(task.id, task.rating || 0)}
+                    <button class="btn btn-outline btn-sm" onclick="copyParamsFromTask(${JSON.stringify(task.parameters).replace(/"/g, '"')})" style="padding:0.2rem 0.5rem;font-size:0.72rem;">${t('detail.copy_params')}</button>
+                </div>
                 <div class="compare-item-meta">
                     ${t('history.res')}: ${task.parameters?.resolution || '-'} ·
                     ${t('history.seed')}: ${task.parameters?.seed || '-'}
@@ -963,16 +1147,54 @@ async function loadCompareView() {
                 exposure="1.2"
                 data-compare-mv
             ></model-viewer>
-        </div>
-        `;
-    }).join('');
+        </div>`;
+    });
+    html += `</div>`;
 
-    // Set up camera sync after model-viewers are loaded
+    content.innerHTML = html;
     setupCompareSync();
 }
 
-function setupCompareSync() {
-    const viewers = document.querySelectorAll('[data-compare-mv]');
+function toggleCompareParams() {
+    const section = document.getElementById('compare-params-section');
+    if (!section) return;
+    const isVisible = section.style.display !== 'none';
+    section.style.display = isVisible ? 'none' : 'block';
+}
+
+function toggleCompareLayout() {
+    compareLayout = compareLayout === 'vertical' ? 'horizontal' : 'vertical';
+    const models = document.getElementById('compare-models');
+    if (models) {
+        models.className = compareLayout === 'horizontal' ? 'compare-horizontal-list' : '';
+    }
+    // Update button text
+    const content = document.getElementById('compare-content');
+    const btn = content?.querySelector('button:nth-child(2)');
+    if (btn) btn.textContent = compareLayout === 'vertical' ? t('compare.layout_h') : t('compare.layout_v');
+}
+
+function toggleCompareFs() {
+    compareFsActive = !compareFsActive;
+    const overlay = document.getElementById('compare-fs-overlay');
+    const sidebar = document.querySelector('.sidebar');
+    if (compareFsActive) {
+        // Clone content into overlay
+        const content = document.getElementById('compare-content');
+        overlay.querySelector('.compare-fs-content').innerHTML = content.innerHTML;
+        overlay.style.display = 'flex';
+        sidebar.style.display = 'none';
+        // Re-setup sync in overlay
+        setupCompareSyncInContainer(overlay);
+    } else {
+        overlay.style.display = 'none';
+        overlay.querySelector('.compare-fs-content').innerHTML = '';
+        sidebar.style.display = '';
+    }
+}
+
+function setupCompareSyncInContainer(container) {
+    const viewers = container.querySelectorAll('[data-compare-mv]');
     const initialOrbit = new Map();
     const initialTarget = new Map();
 
@@ -984,7 +1206,7 @@ function setupCompareSync() {
                 initialOrbit.set(mv, o);
                 initialTarget.set(mv, tg);
             }
-        } catch (e) { /* not ready yet */ }
+        } catch (e) {}
     }
 
     viewers.forEach(mv => {
@@ -996,7 +1218,6 @@ function setupCompareSync() {
         mv.addEventListener('camera-change', () => {
             if (compareSyncActive) return;
             compareSyncActive = true;
-
             const orbit = mv.getCameraOrbit();
             const target = mv.getCameraTarget();
             const srcInitR = initialOrbit.get(mv)?.radius || orbit.radius;
@@ -1018,10 +1239,14 @@ function setupCompareSync() {
                 other.cameraTarget = `${otherTargetX.toFixed(4)}m ${otherTargetY.toFixed(4)}m ${otherTargetZ.toFixed(4)}m`;
                 other.jumpCameraToGoal();
             });
-
             requestAnimationFrame(() => { compareSyncActive = false; });
         });
     });
+}
+
+function setupCompareSync() {
+    const content = document.getElementById('compare-content');
+    if (content) setupCompareSyncInContainer(content);
 }
 
 // ===== Task Detail =====
@@ -1036,7 +1261,7 @@ async function loadTaskDetail(taskId) {
         const content = document.getElementById('detail-content');
         let html = '';
 
-        // Main: 3D Result (takes most space)
+        // Main: 3D Result
         html += '<div class="detail-section">';
         html += `<h3>${t('detail.result')}</h3>`;
         if (task.status === 'completed' && task.output_glb_path) {
@@ -1046,7 +1271,9 @@ async function loadTaskDetail(taskId) {
                 <div class="compare-layout">
                     <div class="compare-panel">
                         <div class="compare-label">${t('detail.source_image')}</div>
-                        <img class="compare-image" src="${imgUrl}" alt="Source">
+                        <div class="zoom-img-container" id="source-img-zoom" style="flex:1;min-height:300px;max-height:500px;">
+                            <img src="${imgUrl}" alt="Source">
+                        </div>
                     </div>
                     <div class="compare-panel">
                         <div class="compare-label">${t('detail.3d_model')}</div>
@@ -1064,6 +1291,10 @@ async function loadTaskDetail(taskId) {
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                         ${t('detail.copy_params')}
                     </button>
+                    <button class="btn btn-outline btn-sm" onclick="resubmitTask(${taskId})">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                        ${t('detail.resubmit')}
+                    </button>
                     <button class="btn btn-outline btn-sm" onclick="toggleFullscreen()">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
                         <span id="fs-btn-label">${t('detail.fullscreen')}</span>
@@ -1077,31 +1308,23 @@ async function loadTaskDetail(taskId) {
             `;
         } else if (task.status === 'failed') {
             html += `<div class="empty-state" style="padding:2rem;"><p style="color:var(--danger)">${t('detail.task_failed')}${task.error_message}</p></div>`;
+            html += `<div style="margin-top:1rem;"><button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button></div>`;
         } else if (task.status === 'processing') {
             html += `<div class="empty-state" style="padding:2rem;"><div class="loader-ring" style="margin:0 auto 1rem;"></div><p>${t('detail.processing')}${task.progress}</p></div>`;
+            html += `<div style="margin-top:1rem;"><button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button></div>`;
         } else {
             html += `<div class="empty-state" style="padding:2rem;"><p>${t('detail.task_is')}${tStatus(task.status)}</p></div>`;
+            html += `<div style="margin-top:1rem;"><button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button></div>`;
         }
         html += '</div>';
 
-        // Below: Preview Renders (collapsible, folded by default) + Parameters
+        // Below: Preview Renders (collapsible, lazy load) + Parameters
         html += '<div class="detail-section">';
-        html += `<h3 class="collapse-header" onclick="toggleRenders()">
+        html += `<h3 class="collapse-header" onclick="toggleRenders(${taskId})">
             <span class="collapse-arrow" id="renders-arrow">&#9654;</span>
             <span id="renders-toggle-text">${t('detail.expand_renders')}</span>
         </h3>`;
-        html += '<div class="collapse-content" id="renders-content">';
-        if (task.render_paths && Object.keys(task.render_paths).length > 0) {
-            for (const [mode, frames] of Object.entries(task.render_paths)) {
-                html += `<div style="margin-bottom:0.75rem;"><div style="font-size:0.75rem;color:var(--text-dim);margin-bottom:0.3rem;">${mode}</div><div class="render-gallery">`;
-                for (let i = 0; i < frames.length; i++) {
-                    html += `<img src="${authUrl('/api/tasks/' + taskId + '/render/' + mode + '/' + i)}" alt="${mode} ${i}">`;
-                }
-                html += '</div></div>';
-            }
-        } else {
-            html += `<p style="color:var(--text-dim);font-size:0.8rem;">${t('detail.no_renders')}</p>`;
-        }
+        html += '<div class="collapse-content" id="renders-content"></div>'; // empty, lazy loaded
 
         html += `<h3 style="margin-top:1.5rem;">${t('detail.params')}</h3>`;
         html += '<div class="param-summary">';
@@ -1115,10 +1338,14 @@ async function loadTaskDetail(taskId) {
             }
         }
         html += '</div>';
-        html += '</div>'; // end collapse-content
-        html += '</div>'; // end detail-section
+        html += '</div>';
 
         content.innerHTML = html;
+
+        // Setup image zoom if completed
+        if (task.status === 'completed' && task.output_glb_path) {
+            setTimeout(() => setupImageZoom('source-img-zoom'), 100);
+        }
 
         if (task.status === 'processing' || task.status === 'queued') {
             setTimeout(() => { if (currentDetailView === taskId) loadTaskDetail(taskId); }, 3000);
@@ -1134,9 +1361,24 @@ function toggleFullscreen() {
     const isFs = wrapper.classList.toggle('viewer-fullscreen');
     const label = document.getElementById('fs-btn-label');
     if (label) label.textContent = isFs ? t('detail.exit_fullscreen') : t('detail.fullscreen');
+
+    // Show/hide exit button
+    let exitBtn = document.getElementById('fs-exit-btn');
+    if (isFs && !exitBtn) {
+        exitBtn = document.createElement('button');
+        exitBtn.id = 'fs-exit-btn';
+        exitBtn.className = 'fs-exit-btn';
+        exitBtn.textContent = t('detail.exit');
+        exitBtn.onclick = toggleFullscreen;
+        document.body.appendChild(exitBtn);
+        exitBtn.style.display = 'block';
+    } else if (exitBtn) {
+        exitBtn.style.display = isFs ? 'block' : 'none';
+    }
 }
 
-function toggleRenders() {
+let rendersLoaded = false;
+async function toggleRenders(taskId) {
     const content = document.getElementById('renders-content');
     const arrow = document.getElementById('renders-arrow');
     const text = document.getElementById('renders-toggle-text');
@@ -1144,6 +1386,29 @@ function toggleRenders() {
     const isOpen = content.classList.toggle('open');
     if (arrow) arrow.classList.toggle('open', isOpen);
     if (text) text.textContent = isOpen ? t('detail.collapse_renders') : t('detail.expand_renders');
+
+    // Lazy load renders when opening
+    if (isOpen && !rendersLoaded && taskId) {
+        rendersLoaded = true;
+        try {
+            const task = await apiFetch(`/tasks/${taskId}`);
+            let html = '';
+            if (task.render_paths && Object.keys(task.render_paths).length > 0) {
+                for (const [mode, frames] of Object.entries(task.render_paths)) {
+                    html += `<div style="margin-bottom:0.75rem;"><div style="font-size:0.75rem;color:var(--text-dim);margin-bottom:0.3rem;">${mode}</div><div class="render-gallery">`;
+                    for (let i = 0; i < frames.length; i++) {
+                        html += `<img src="${authUrl('/api/tasks/' + taskId + '/render/' + mode + '/' + i)}" alt="${mode} ${i}">`;
+                    }
+                    html += '</div></div>';
+                }
+            } else {
+                html = `<p style="color:var(--text-dim);font-size:0.8rem;">${t('detail.no_renders')}</p>`;
+            }
+            content.innerHTML = html;
+        } catch (e) {
+            content.innerHTML = `<p style="color:var(--text-dim);font-size:0.8rem;">${t('detail.no_renders')}</p>`;
+        }
+    }
 }
 
 async function deleteTask(taskId) {
@@ -1162,7 +1427,6 @@ async function deleteTask(taskId) {
 async function loadAdminUsers() {
     try {
         const users = await apiFetch('/users');
-
         const filterSelect = document.getElementById('filter-user');
         if (filterSelect) {
             const currentVal = filterSelect.value;
@@ -1170,7 +1434,6 @@ async function loadAdminUsers() {
                 users.map(u => `<option value="${u.id}">${u.username} (#${u.id})</option>`).join('');
             filterSelect.value = currentVal;
         }
-
         const tbody = document.getElementById('admin-users-tbody');
         tbody.innerHTML = users.map(u => `
             <tr>

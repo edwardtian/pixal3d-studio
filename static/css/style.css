@@ -606,6 +606,131 @@ model-viewer {
     height: 100vh;
 }
 
+/* Fullscreen exit button */
+.fs-exit-btn {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 3100;
+    background: rgba(0,0,0,0.7);
+    border: 1px solid var(--border);
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.85rem;
+    display: none;
+}
+
+.viewer-fullscreen ~ .fs-exit-btn { display: block; }
+
+/* Zoomable image */
+.zoom-img-container {
+    overflow: hidden;
+    cursor: grab;
+    position: relative;
+    border-radius: var(--radius-md);
+    background: #000;
+}
+
+.zoom-img-container:active { cursor: grabbing; }
+
+.zoom-img-container img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    transform-origin: center;
+    transition: transform 0.1s;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
+/* Changed parameter highlight */
+.param-changed .param-label { color: var(--accent) !important; }
+.param-changed select, .param-changed input { border-color: var(--accent) !important; }
+.param-changed .param-value { color: var(--accent) !important; }
+
+/* Compare fullscreen */
+.compare-fs-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 3500;
+    background: var(--bg);
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.compare-fs-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.compare-fs-content {
+    flex: 1;
+    overflow: auto;
+    padding: 0.5rem;
+}
+
+.compare-fs-content.compare-horizontal {
+    display: flex;
+    gap: 0.5rem;
+    overflow-x: auto;
+}
+
+.compare-fs-content.compare-horizontal .compare-item {
+    min-width: 400px;
+    flex-shrink: 0;
+}
+
+.compare-fs-content.compare-horizontal .compare-item model-viewer {
+    height: calc(100vh - 120px);
+}
+
+/* Params comparison table */
+.params-compare-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+}
+
+.params-compare-table th, .params-compare-table td {
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+}
+
+.params-compare-table th {
+    color: var(--text-dim);
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+}
+
+.params-compare-table .param-diff { color: var(--accent); font-weight: 600; }
+
+/* Compare horizontal layout */
+.compare-horizontal-list {
+    display: flex;
+    gap: 0.5rem;
+    overflow-x: auto;
+}
+
+.compare-horizontal-list .compare-item {
+    min-width: 400px;
+    flex-shrink: 0;
+}
+
+.compare-horizontal-list .compare-item model-viewer {
+    height: calc(100vh - 200px);
+}
+
 /* ===== Compare View ===== */
 .compare-item {
     background: var(--surface);
