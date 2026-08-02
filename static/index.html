@@ -69,10 +69,11 @@
             <span><span data-i18n="queue.label">Queue</span>: <span id="queue-count">0</span></span>
         </div>
 
-        <button class="btn btn-primary btn-full" onclick="navigateTo('create')" style="margin-bottom: 0.5rem;" data-i18n="nav.new_task">New Task</button>
-        <button class="btn btn-outline btn-full" onclick="navigateTo('history')" style="margin-bottom: 0.5rem;" data-i18n="nav.task_history">Task History</button>
-        <button class="btn btn-outline btn-full" onclick="navigateTo('compare')" style="margin-bottom: 0.5rem;" data-i18n="nav.compare">Compare</button>
-        <button class="btn btn-outline btn-full" id="admin-nav-btn" onclick="navigateTo('admin')" style="display:none; margin-bottom: 0.5rem;" data-i18n="nav.user_management">User Management</button>
+        <button class="btn btn-primary btn-full" data-nav-target="create" onclick="navigateTo('create')" style="margin-bottom: 0.5rem;" data-i18n="nav.new_task">New Task</button>
+        <button class="btn btn-outline btn-full" data-nav-target="history" onclick="navigateTo('history')" style="margin-bottom: 0.5rem;" data-i18n="nav.task_history">Task History</button>
+        <button class="btn btn-outline btn-full" data-nav-target="compare" onclick="navigateTo('compare')" style="margin-bottom: 0.5rem;" data-i18n="nav.compare">Compare</button>
+        <button class="btn btn-outline btn-full" data-nav-target="presets" onclick="navigateTo('presets')" style="margin-bottom: 0.5rem;" data-i18n="nav.presets">Presets</button>
+        <button class="btn btn-outline btn-full" id="admin-nav-btn" data-nav-target="admin" onclick="navigateTo('admin')" style="display:none; margin-bottom: 0.5rem;" data-i18n="nav.user_management">User Management</button>
     </div>
 
     <!-- Main content -->
@@ -191,6 +192,25 @@
                     </thead>
                     <tbody id="admin-users-tbody"></tbody>
                 </table>
+            </div>
+        </div>
+
+        <!-- Presets View -->
+        <div class="view" id="view-presets">
+            <h2 style="margin-bottom: 1rem;" data-i18n="preset.title">Preset Management</h2>
+            <div class="detail-section">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th data-i18n="preset.name">Name</th>
+                            <th data-i18n="preset.default">Default</th>
+                            <th data-i18n="admin.created">Created</th>
+                            <th data-i18n="preset.actions">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="presets-tbody"></tbody>
+                </table>
+                <div id="presets-empty" style="display:none;text-align:center;padding:2rem;color:var(--text-dim);" data-i18n="preset.empty">No presets saved yet.</div>
             </div>
         </div>
     </div>

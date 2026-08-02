@@ -17,6 +17,7 @@ class User(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     tasks = relationship("Task", back_populates="user", cascade="all, delete-orphan")
+    presets = relationship("Preset", back_populates="user", cascade="all, delete-orphan")
 
 
 class Task(Base):
@@ -28,6 +29,7 @@ class Task(Base):
     progress = Column(String(256), default="")
     progress_step = Column(Integer, default=0)
     progress_total = Column(Integer, default=0)
+    rating = Column(Integer, default=0)
 
     input_image_path = Column(String(512), nullable=False)
     preprocessed_image_path = Column(String(512), default="")
@@ -46,3 +48,16 @@ class Task(Base):
     completed_at = Column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="tasks")
+
+
+class Preset(Base):
+    __tablename__ = "presets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String(128), nullable=False)
+    parameters = Column(JSON, default=dict)
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", back_populates="presets")

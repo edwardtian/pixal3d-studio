@@ -21,6 +21,11 @@ let cropImg = null;
 let selectedTaskIds = new Set();
 let compareSyncActive = false;
 
+// Preset & copied params state
+let copiedParams = null;
+let presetList = [];
+let currentDetailParams = null;
+
 const API = '/api';
 
 // ===== API helpers =====
@@ -101,6 +106,7 @@ function showMainApp() {
         document.getElementById('admin-filters').style.display = 'flex';
     }
     navigateTo('create');
+    setTimeout(() => applyDefaultPreset(), 500);
 }
 
 function logout() {
@@ -157,9 +163,22 @@ function navigateTo(view) {
     const viewEl = document.getElementById('view-' + view);
     if (viewEl) viewEl.classList.add('active');
 
+    // Update nav button highlight
+    document.querySelectorAll('.sidebar .btn-full').forEach(btn => {
+        const target = btn.dataset.navTarget;
+        if (target === view) {
+            btn.classList.remove('btn-outline');
+            btn.classList.add('btn-primary');
+        } else if (target) {
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-outline');
+        }
+    });
+
     if (view === 'history') loadTaskHistory();
     if (view === 'admin') loadAdminUsers();
     if (view === 'compare') loadCompareView();
+    if (view === 'presets') loadPresetsView();
 }
 
 // ===== Parameters =====
@@ -183,6 +202,19 @@ function renderParameters() {
 
     let html = `<h3 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-dim);margin-bottom:1rem;">${t('create.params')}</h3>`;
 
+    // Preset bar
+    html += `<div class="preset-bar">
+        <select id="preset-select" onchange="applyPresetFromDropdown()">
+            <option value="">${t('create.apply_preset')}</option>
+        </select>
+        <button class="btn btn-outline btn-sm" onclick="savePresetPrompt()" data-i18n="create.save_preset">${t('create.save_preset')}</button>
+    </div>`;
+
+    // Copied params indicator
+    if (copiedParams) {
+        html += `<div style="font-size:0.72rem;color:var(--accent);margin-bottom:0.75rem;">${t('detail.params_copied')}</div>`;
+    }
+
     for (const [groupName, params] of Object.entries(groups)) {
         html += `<div class="param-group"><div class="param-group-title">${tGroup(groupName)}</div>`;
         for (const p of params) {
@@ -193,6 +225,13 @@ function renderParameters() {
 
     panel.innerHTML = html;
     attachParamListeners();
+    refreshPresetDropdown();
+
+    // If copied params exist, apply them
+    if (copiedParams) {
+        applyParamsToUI(copiedParams);
+        copiedParams = null;
+    }
 }
 
 function renderParamItem(p) {
@@ -314,6 +353,211 @@ function collectParameters() {
     return params;
 }
 
+function applyParamsToUI(params) {
+    for (const key of Object.keys(parameterDefs)) {
+        if (key === 'fov_unit') {
+            const el = document.getElementById('param-fov_unit');
+            if (el && params[key] !== undefined) el.value = params[key];
+            continue;
+        }
+        if (key === 'manual_fov') {
+            const auto = (params[key] === undefined || params[key] < 0);
+            const autoEl = document.getElementById('fov-auto');
+            if (autoEl) {
+                autoEl.checked = auto;
+                toggleFovAuto();
+            }
+            if (!auto) {
+                const el = document.getElementById('param-manual_fov');
+                const unit = document.getElementById('param-fov_unit')?.value || 'deg';
+                if (el) {
+                    let val = params[key];
+                    if (unit === 'rad') val = val * Math.PI / 180;
+                    el.value = val;
+                }
+            }
+            continue;
+        }
+        const el = document.getElementById('param-' + key);
+        if (!el || params[key] === undefined) continue;
+        const def = parameterDefs[key];
+        if (def.type === 'bool') {
+            el.checked = params[key];
+        } else {
+            el.value = params[key];
+        }
+        updateParamDisplay(key);
+    }
+}
+
+// ===== Presets =====
+async function refreshPresetDropdown() {
+    try {
+        presetList = await apiFetch('/presets');
+    } catch (e) { return; }
+    const sel = document.getElementById('preset-select');
+    if (!sel) return;
+    const defaultPreset = presetList.find(p => p.is_default);
+    sel.innerHTML = `<option value="">${t('create.apply_preset')}</option>` +
+        presetList.map(p => `<option value="${p.id}">${p.name}${p.is_default ? ' ★' : ''}</option>`).join('');
+}
+
+function applyPresetFromDropdown() {
+    const sel = document.getElementById('preset-select');
+    if (!sel || !sel.value) return;
+    const preset = presetList.find(p => p.id == sel.value);
+    if (preset) {
+        applyParamsToUI(preset.parameters);
+        showToast(t('preset.applied') + ': ' + preset.name);
+        sel.value = '';
+    }
+}
+
+async function savePresetPrompt() {
+    const name = prompt(t('preset.name_prompt'));
+    if (!name) return;
+    const params = collectParameters();
+    try {
+        await apiFetch('/presets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, parameters: params })
+        });
+        showToast(t('preset.saved'));
+        await refreshPresetDropdown();
+    } catch (err) {
+        showToast(t('preset.save_error') + err.message);
+    }
+}
+
+async function loadPresetsView() {
+    try {
+        presetList = await apiFetch('/presets');
+        const tbody = document.getElementById('presets-tbody');
+        const empty = document.getElementById('presets-empty');
+        if (presetList.length === 0) {
+            tbody.innerHTML = '';
+            empty.style.display = 'block';
+            return;
+        }
+        empty.style.display = 'none';
+        tbody.innerHTML = presetList.map(p => `
+            <tr>
+                <td>${p.name}</td>
+                <td>${p.is_default ? '★' : ''}</td>
+                <td>${new Date(p.created_at).toLocaleDateString()}</td>
+                <td style="display:flex;gap:0.3rem;flex-wrap:wrap;">
+                    <button class="btn btn-outline btn-sm" onclick="renamePreset(${p.id})">${t('preset.rename')}</button>
+                    <button class="btn btn-outline btn-sm" onclick="toggleDefaultPreset(${p.id}, ${!p.is_default})">${p.is_default ? t('preset.unset_default') : t('preset.set_default')}</button>
+                    <button class="btn btn-danger btn-sm" onclick="deletePreset(${p.id})">${t('preset.delete')}</button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (err) {
+        showToast(t('preset.save_error') + err.message);
+    }
+}
+
+async function renamePreset(id) {
+    const preset = presetList.find(p => p.id === id);
+    const name = prompt(t('preset.rename_prompt'), preset?.name || '');
+    if (!name) return;
+    try {
+        await apiFetch(`/presets/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        showToast(t('preset.renamed'));
+        loadPresetsView();
+        refreshPresetDropdown();
+    } catch (err) {
+        showToast(t('preset.save_error') + err.message);
+    }
+}
+
+async function toggleDefaultPreset(id, isDefault) {
+    try {
+        await apiFetch(`/presets/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_default: isDefault })
+        });
+        showToast(isDefault ? t('preset.default_set') : t('preset.default_unset'));
+        loadPresetsView();
+        refreshPresetDropdown();
+    } catch (err) {
+        showToast(t('preset.save_error') + err.message);
+    }
+}
+
+async function deletePreset(id) {
+    if (!confirm(t('preset.confirm_delete'))) return;
+    try {
+        await apiFetch(`/presets/${id}`, { method: 'DELETE' });
+        showToast(t('preset.deleted'));
+        loadPresetsView();
+        refreshPresetDropdown();
+    } catch (err) {
+        showToast(t('preset.save_error') + err.message);
+    }
+}
+
+async function applyDefaultPreset() {
+    try {
+        presetList = await apiFetch('/presets');
+        const defaultPreset = presetList.find(p => p.is_default);
+        if (defaultPreset) {
+            applyParamsToUI(defaultPreset.parameters);
+            showToast(t('create.default_preset_applied') + ': ' + defaultPreset.name);
+        }
+    } catch (e) { /* ignore */ }
+}
+
+// ===== Copy Params =====
+function copyParamsFromTask(params) {
+    copiedParams = { ...params };
+    navigateTo('create');
+    renderParameters();
+    showToast(t('detail.params_copied'));
+}
+
+// ===== Rating =====
+async function setTaskRating(taskId, rating) {
+    try {
+        await apiFetch(`/tasks/${taskId}/rating`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rating })
+        });
+        // Update star display in place
+        const container = document.querySelector('.star-rating');
+        if (container) {
+            container.innerHTML = '';
+            for (let i = 1; i <= 5; i++) {
+                const star = document.createElement('span');
+                star.className = 'star' + (i <= rating ? ' filled' : '');
+                star.innerHTML = '&#9733;';
+                star.title = String(i);
+                star.onclick = () => setTaskRating(taskId, i);
+                container.appendChild(star);
+            }
+        }
+    } catch (err) {
+        showToast(t('msg.update_failed') + err.message);
+    }
+}
+
+function renderStarRating(taskId, rating) {
+    let html = '<div class="star-rating">';
+    for (let i = 1; i <= 5; i++) {
+        const filled = i <= rating ? 'filled' : '';
+        html += `<span class="star ${filled}" onclick="setTaskRating(${taskId}, ${i})" title="${i}">&#9733;</span>`;
+    }
+    html += '</div>';
+    return html;
+}
+
 // ===== Upload =====
 const uploadZone = document.getElementById('upload-zone');
 const fileInput = document.getElementById('file-input');
@@ -353,7 +597,7 @@ function enterCropMode() {
     reader.onload = (e) => {
         cropImg = new Image();
         cropImg.onload = () => {
-            const maxW = 600, maxH = 400;
+            const maxW = 900, maxH = 700;
             let w = cropImg.width, h = cropImg.height;
             const scale = Math.min(maxW / w, maxH / h, 1);
             w = Math.round(w * scale);
@@ -623,6 +867,7 @@ async function loadTaskHistory() {
             const userLabel = currentUser.role === 'admin' ? ` (${t('history.user')} #${task.user_id})` : '';
             const canSelect = task.status === 'completed' && task.output_glb_path;
             const isSelected = selectedTaskIds.has(task.id);
+            const ratingHtml = task.rating > 0 ? `<span style="color:#fbbf24;">${'★'.repeat(task.rating)}${'☆'.repeat(5-task.rating)}</span>` : '';
             return `
             <div class="task-card" style="${canSelect ? '' : 'opacity:0.6;'}">
                 <input type="checkbox" class="task-select" ${canSelect ? '' : 'disabled'} ${isSelected ? 'checked' : ''} onchange="toggleSelectTask(${task.id}, this.checked)" onclick="event.stopPropagation()">
@@ -631,6 +876,7 @@ async function loadTaskHistory() {
                     <h4>Task #${task.id}${userLabel}</h4>
                     <div class="task-meta">
                         ${statusBadge}
+                        ${ratingHtml}
                         <span>${new Date(task.created_at).toLocaleString()}</span>
                         <span>${t('history.res')}: ${task.parameters?.resolution || '-'}</span>
                         <span>${t('history.seed')}: ${task.parameters?.seed || '-'}</span>
@@ -783,6 +1029,7 @@ async function loadTaskDetail(taskId) {
     try {
         const task = await apiFetch(`/tasks/${taskId}`);
         currentDetailView = taskId;
+        currentDetailParams = task.parameters || {};
         navigateTo('detail');
         document.getElementById('detail-title').textContent = `Task #${taskId}`;
 
@@ -813,11 +1060,19 @@ async function loadTaskDetail(taskId) {
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         ${t('detail.download_glb')}
                     </a>
+                    <button class="btn btn-outline btn-sm" onclick="copyParamsFromTask(currentDetailParams)">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        ${t('detail.copy_params')}
+                    </button>
                     <button class="btn btn-outline btn-sm" onclick="toggleFullscreen()">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
                         <span id="fs-btn-label">${t('detail.fullscreen')}</span>
                     </button>
                     <button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button>
+                </div>
+                <div style="margin-top:0.75rem;display:flex;align-items:center;gap:0.5rem;">
+                    <span style="font-size:0.8rem;color:var(--text-dim);">${t('detail.rate')}:</span>
+                    ${renderStarRating(taskId, task.rating || 0)}
                 </div>
             `;
         } else if (task.status === 'failed') {

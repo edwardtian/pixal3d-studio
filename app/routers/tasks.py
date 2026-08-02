@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 
 from app.database import get_db
 from app.models import User, Task
-from app.schemas import TaskResponse
+from app.schemas import TaskResponse, RatingUpdate
 from app.auth import get_current_user
 from app.config import settings
 from app.parameters import validate_parameters
@@ -235,3 +235,22 @@ async def delete_task(
     await db.delete(task)
     await db.commit()
     return {"detail": "Task deleted"}
+
+
+@router.patch("/{task_id}/rating", response_model=TaskResponse)
+async def update_rating(
+    task_id: int,
+    payload: RatingUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalars().first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.user_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not your task")
+    task.rating = payload.rating
+    await db.commit()
+    await db.refresh(task)
+    return task

@@ -37,12 +37,17 @@ class TaskCreate(BaseModel):
     parameters: dict[str, Any]
 
 
+class RatingUpdate(BaseModel):
+    rating: int = Field(ge=0, le=5)
+
+
 class TaskResponse(BaseModel):
     id: int
     status: str
     progress: str
     progress_step: int
     progress_total: int
+    rating: int
     input_image_path: str
     parameters: dict[str, Any]
     output_glb_path: str
@@ -53,6 +58,27 @@ class TaskResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class PresetCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    parameters: dict[str, Any]
+
+
+class PresetUpdate(BaseModel):
+    name: Optional[str] = None
+    is_default: Optional[bool] = None
+
+
+class PresetResponse(BaseModel):
+    id: int
+    name: str
+    parameters: dict[str, Any]
+    is_default: bool
+    created_at: datetime
 
     class Config:
         from_attributes = True

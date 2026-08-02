@@ -861,6 +861,49 @@ model-viewer {
 
 .empty-state svg { margin-bottom: 1rem; opacity: 0.5; }
 
+/* ===== Star Rating ===== */
+.star-rating {
+    display: inline-flex;
+    gap: 2px;
+    cursor: pointer;
+}
+
+.star-rating .star {
+    font-size: 1.1rem;
+    color: var(--border);
+    cursor: pointer;
+    user-select: none;
+    line-height: 1;
+}
+
+.star-rating .star.filled {
+    color: #fbbf24;
+}
+
+.star-rating .star:hover {
+    color: #fbbf24;
+}
+
+/* ===== Preset Bar ===== */
+.preset-bar {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+}
+
+.preset-bar select {
+    background: var(--surface-light);
+    border: 1px solid var(--border);
+    color: white;
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.8rem;
+    flex: 1;
+    min-width: 120px;
+}
+
 /* ===== Image Crop ===== */
 .crop-toolbar {
     display: flex;
@@ -888,7 +931,7 @@ model-viewer {
 .crop-container canvas {
     display: block;
     max-width: 100%;
-    max-height: 400px;
+    max-height: 700px;
     cursor: crosshair;
     border-radius: var(--radius-md);
 }
