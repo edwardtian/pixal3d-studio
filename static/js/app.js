@@ -463,7 +463,10 @@ async function refreshPresetDropdown() {
     if (!sel) return;
     const defaultPreset = presetList.find(p => p.is_default);
     sel.innerHTML = `<option value="">${t('create.apply_preset')}</option>` +
-        presetList.map(p => `<option value="${p.id}">${p.name}${p.is_default ? ' ★' : ''}</option>`).join('');
+        presetList.map(p => {
+            const owner = (p.user_id === currentUser?.id) ? '' : (p.is_public ? ' (public)' : '');
+            return `<option value="${p.id}">${p.name}${p.is_default ? ' ★' : ''}${owner}</option>`;
+        }).join('');
 }
 
 function applyPresetFromDropdown() {
@@ -497,7 +500,24 @@ async function savePresetPrompt() {
 
 async function loadPresetsView() {
     try {
-        presetList = await apiFetch('/presets');
+        // Admin: load user filter and fetch all presets
+        let path = '/presets';
+        if (currentUser.role === 'admin') {
+            const filterSelect = document.getElementById('preset-filter-user');
+            const filterUser = filterSelect?.value;
+            if (filterUser) path += '?user_id=' + filterUser;
+            // Populate user filter if empty
+            if (filterSelect && filterSelect.options.length <= 1) {
+                try {
+                    const users = await apiFetch('/users');
+                    filterSelect.innerHTML = `<option value="">${t('history.all_users')}</option>` +
+                        users.map(u => `<option value="${u.id}">${u.username} (#${u.id})</option>`).join('');
+                } catch (e) { /* ignore */ }
+            }
+            document.getElementById('preset-filters').style.display = 'flex';
+        }
+
+        presetList = await apiFetch(path);
         const tbody = document.getElementById('presets-tbody');
         const empty = document.getElementById('presets-empty');
         if (presetList.length === 0) {
@@ -506,18 +526,67 @@ async function loadPresetsView() {
             return;
         }
         empty.style.display = 'none';
-        tbody.innerHTML = presetList.map(p => `
+
+        // Build a user-id -> username map for admin display
+        let userMap = {};
+        if (currentUser.role === 'admin') {
+            try {
+                const users = await apiFetch('/users');
+                users.forEach(u => userMap[u.id] = u.username);
+            } catch (e) { /* ignore */ }
+        }
+
+        tbody.innerHTML = presetList.map(p => {
+            const ownerLabel = currentUser.role === 'admin'
+                ? (userMap[p.user_id] || `#${p.user_id}`)
+                : (p.user_id === currentUser?.id ? t('preset.me') : t('preset.public'));
+            const isOwner = p.user_id === currentUser?.id;
+            const canEdit = isOwner || currentUser.role === 'admin';
+            const visLabel = p.is_public ? t('preset.public') : t('preset.private');
+            const visToggle = canEdit
+                ? `<button class="btn btn-outline btn-sm" onclick="togglePresetPublic(${p.id}, ${!p.is_public})">${p.is_public ? t('preset.make_private') : t('preset.make_public')}</button>`
+                : visLabel;
+            const applyBtn = `<button class="btn btn-primary btn-sm" onclick="applyPresetById(${p.id})">${t('preset.apply')}</button>`;
+            const renameBtn = isOwner ? `<button class="btn btn-outline btn-sm" onclick="renamePreset(${p.id})">${t('preset.rename')}</button>` : '';
+            const defaultBtn = isOwner ? `<button class="btn btn-outline btn-sm" onclick="toggleDefaultPreset(${p.id}, ${!p.is_default})">${p.is_default ? t('preset.unset_default') : t('preset.set_default')}</button>` : '';
+            const deleteBtn = canEdit ? `<button class="btn btn-danger btn-sm" onclick="deletePreset(${p.id})">${t('preset.delete')}</button>` : '';
+            return `
             <tr>
                 <td>${p.name}</td>
+                <td style="font-size:0.78rem;">${ownerLabel}</td>
                 <td>${p.is_default ? '★' : ''}</td>
+                <td>${visToggle}</td>
                 <td>${new Date(p.created_at).toLocaleDateString()}</td>
                 <td style="display:flex;gap:0.3rem;flex-wrap:wrap;">
-                    <button class="btn btn-outline btn-sm" onclick="renamePreset(${p.id})">${t('preset.rename')}</button>
-                    <button class="btn btn-outline btn-sm" onclick="toggleDefaultPreset(${p.id}, ${!p.is_default})">${p.is_default ? t('preset.unset_default') : t('preset.set_default')}</button>
-                    <button class="btn btn-danger btn-sm" onclick="deletePreset(${p.id})">${t('preset.delete')}</button>
+                    ${applyBtn}
+                    ${renameBtn}
+                    ${defaultBtn}
+                    ${deleteBtn}
                 </td>
-            </tr>
-        `).join('');
+            </tr>`;
+        }).join('');
+    } catch (err) {
+        showToast(t('preset.save_error') + err.message);
+    }
+}
+
+async function applyPresetById(presetId) {
+    const preset = presetList.find(p => p.id === presetId);
+    if (!preset) return;
+    applyParamsToUI(preset.parameters);
+    showToast(t('preset.applied') + ': ' + preset.name);
+    navigateTo('create');
+}
+
+async function togglePresetPublic(id, isPublic) {
+    try {
+        await apiFetch(`/presets/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_public: isPublic })
+        });
+        showToast(isPublic ? t('preset.made_public') : t('preset.made_private'));
+        loadPresetsView();
     } catch (err) {
         showToast(t('preset.save_error') + err.message);
     }
@@ -1238,7 +1307,7 @@ function renderCompareContent(content) {
 
     // Model viewers
     html += `<div id="compare-models" class="${compareLayout === 'horizontal' ? 'compare-horizontal-list' : ''}">`;
-    compareTasks.forEach(task => {
+    compareTasks.forEach((task, idx) => {
         const glbUrl = authUrl('/api/tasks/' + task.id + '/download');
         html += `
         <div class="compare-item">
@@ -1246,7 +1315,7 @@ function renderCompareContent(content) {
                 <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
                     <h4>Task #${task.id}</h4>
                     ${renderStarRating(task.id, task.rating || 0)}
-                    <button class="btn btn-outline btn-sm" onclick="copyParamsFromTask(${JSON.stringify(task.parameters).replace(/"/g, '"')})" style="padding:0.2rem 0.5rem;font-size:0.72rem;">${t('detail.copy_params')}</button>
+                    <button class="btn btn-outline btn-sm" onclick="copyParamsFromTask(compareTasks[${idx}].parameters)" style="padding:0.2rem 0.5rem;font-size:0.72rem;">${t('detail.copy_params')}</button>
                 </div>
                 <div class="compare-item-meta">
                     ${t('history.res')}: ${task.parameters?.resolution || '-'} ·

@@ -28,6 +28,9 @@ async def _auto_migrate():
         "overall_progress": "INTEGER DEFAULT 0",
         "assigned_gpu": "INTEGER",
     }
+    new_preset_columns = {
+        "is_public": "BOOLEAN DEFAULT 0",
+    }
     async with engine.begin() as conn:
         # Add missing columns to tasks table
         result = await conn.execute(text("PRAGMA table_info(tasks)"))
@@ -36,6 +39,14 @@ async def _auto_migrate():
             if col not in existing_cols:
                 print(f"[DB] Adding column '{col}' to tasks table...")
                 await conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {col} {typedef}"))
+
+        # Add missing columns to presets table
+        result = await conn.execute(text("PRAGMA table_info(presets)"))
+        existing_preset_cols = {row[1] for row in result.fetchall()}
+        for col, typedef in new_preset_columns.items():
+            if col not in existing_preset_cols:
+                print(f"[DB] Adding column '{col}' to presets table...")
+                await conn.execute(text(f"ALTER TABLE presets ADD COLUMN {col} {typedef}"))
 
 
 async def init_db():

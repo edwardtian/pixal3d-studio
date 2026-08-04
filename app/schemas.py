@@ -43,6 +43,7 @@ class RatingUpdate(BaseModel):
 
 class TaskResponse(BaseModel):
     id: int
+    user_id: int
     status: str
     progress: str
     progress_step: int
@@ -78,13 +79,16 @@ class PresetCreate(BaseModel):
 class PresetUpdate(BaseModel):
     name: Optional[str] = None
     is_default: Optional[bool] = None
+    is_public: Optional[bool] = None
 
 
 class PresetResponse(BaseModel):
     id: int
+    user_id: int
     name: str
     parameters: dict[str, Any]
     is_default: bool
+    is_public: bool = False
     created_at: datetime
 
     class Config:

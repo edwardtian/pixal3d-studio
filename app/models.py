@@ -75,6 +75,7 @@ class Preset(Base):
     name = Column(String(128), nullable=False)
     parameters = Column(JSON, default=dict)
     is_default = Column(Boolean, default=False)
+    is_public = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     user = relationship("User", back_populates="presets")

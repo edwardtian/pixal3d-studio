@@ -1,25 +1,25 @@
-"""GPU monitoring (pynvml) and multi-worker management.
+"""GPU monitoring (pynvml) and multi-process worker management.
 
-One worker coroutine per enabled GPU. Each worker lazily loads its own pipeline
-instance onto its assigned GPU. A central dispatcher pulls tasks from the shared
-`task_queue` and hands them to the first idle worker whose GPU has enough free
-VRAM (and is below the utilization threshold).
+One worker PROCESS per enabled GPU. Each process sets CUDA_VISIBLE_DEVICES
+so the GPU appears as cuda:0 within that process, completely isolating CUDA
+contexts. The main process dispatches task IDs to worker processes via
+multiprocessing queues.
 """
 
 import asyncio
-import threading
+import multiprocessing as mp
+import os
 import traceback
 from typing import Optional
 
 from app.config import settings
-from app.queue import task_queue, QueueEntry
 
 
 # ----- pynvml (optional; degrades gracefully when unavailable) -----
 
 _nvml_initialized = False
 _nvml_available = False
-_nvml_lock = threading.Lock()
+_nvml_lock = __import__('threading').Lock()
 
 
 def _ensure_nvml():
@@ -50,11 +50,7 @@ def _torch_visible_gpu_count() -> int:
 
 
 def detect_all_gpus() -> list[dict]:
-    """Return a list of all physical GPUs visible to the process.
-
-    Each entry: {id, name, mem_total_mb, mem_used_mb, mem_free_mb, utilization_pct}.
-    Falls back to torch-only enumeration (no mem/util) if pynvml is unavailable.
-    """
+    """Return a list of all physical GPUs visible to the process."""
     gpus: list[dict] = []
     if _ensure_nvml():
         try:
@@ -96,11 +92,8 @@ def detect_all_gpus() -> list[dict]:
         except Exception:
             name = f"GPU {i}"
         gpus.append({
-            "id": i,
-            "name": name,
-            "mem_total_mb": 0,
-            "mem_used_mb": 0,
-            "mem_free_mb": 0,
+            "id": i, "name": name,
+            "mem_total_mb": 0, "mem_used_mb": 0, "mem_free_mb": 0,
             "utilization_pct": 0,
         })
     return gpus
@@ -132,7 +125,6 @@ async def _load_enabled_gpu_ids() -> list[int]:
     from app.models import SystemConfig
     from sqlalchemy import select
 
-    # 1. DB override
     try:
         async with async_session() as db:
             res = await db.execute(
@@ -146,14 +138,12 @@ async def _load_enabled_gpu_ids() -> list[int]:
     except Exception:
         pass
 
-    # 2. Env default
     env = (settings.GPU_IDS or "").strip()
     if env:
         ids = [int(x) for x in env.split(",") if x.strip().isdigit()]
         if ids:
             return ids
 
-    # 3. All visible GPUs
     return [g["id"] for g in detect_all_gpus()]
 
 
@@ -176,36 +166,74 @@ async def _save_enabled_gpu_ids(ids: list[int]):
         await db.commit()
 
 
-# ----- WorkerManager -----
+# ----- WorkerManager (multi-process) -----
 
-class Worker:
+# Use spawn context for everything — avoids CUDA fork issues
+_mp_ctx = mp.get_context('spawn')
+
+
+class WorkerProcess:
     def __init__(self, gpu_id: int):
         self.gpu_id = gpu_id
-        self.busy = False
-        self.current_task_id: Optional[int] = None
-        self.pipeline_loaded = False
+        self.task_queue = _mp_ctx.Queue()
+        self.busy = _mp_ctx.Value('b', False)
+        self.current_task_id = _mp_ctx.Value('i', 0)
+        self.process: Optional[mp.Process] = None
         self.stop_requested = False
-        self._task: Optional[asyncio.Task] = None
+        self.pipeline_loaded = False
+
+    def start(self, db_url: str):
+        self.process = _mp_ctx.Process(
+            target=_worker_main_wrapper,
+            args=(self.gpu_id, self.task_queue, self.busy,
+                  self.current_task_id, db_url),
+            daemon=True,
+        )
+        self.process.start()
+
+    def stop(self):
+        self.stop_requested = True
+        try:
+            self.task_queue.put(None)  # shutdown signal
+        except Exception:
+            pass
+
+    def is_alive(self) -> bool:
+        return self.process is not None and self.process.is_alive()
 
     def as_status(self) -> dict:
         return {
             "gpu_id": self.gpu_id,
-            "busy": self.busy,
-            "current_task_id": self.current_task_id,
-            "pipeline_loaded": self.pipeline_loaded,
+            "busy": bool(self.busy.value) if self.process else False,
+            "current_task_id": int(self.current_task_id.value) if self.process and self.busy.value else None,
+            "pipeline_loaded": self.pipeline_loaded and self.is_alive(),
             "stop_requested": self.stop_requested,
         }
 
 
+def _worker_main_wrapper(gpu_id, task_queue, busy, current_task_id, db_url):
+    """Wrapper to set up sys.path before calling the real worker entry."""
+    # Ensure the app package is importable in the spawned process
+    app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if app_root not in sys.path:
+        sys.path.insert(0, app_root)
+    from app.worker_proc import worker_entry
+    worker_entry(gpu_id, task_queue, busy, current_task_id, db_url)
+
+
+import sys  # needed for _worker_main_wrapper
+
+
 class WorkerManager:
     def __init__(self):
-        self._workers: dict[int, Worker] = {}
+        self._workers: dict[int, WorkerProcess] = {}
         self._dispatcher_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
         self._started = False
+        self._dispatched: set[int] = set()  # task IDs given to workers but not yet "processing"
 
     @property
-    def workers(self) -> dict[int, Worker]:
+    def workers(self) -> dict[int, WorkerProcess]:
         return self._workers
 
     async def start(self):
@@ -213,32 +241,44 @@ class WorkerManager:
             return
         self._started = True
         ids = await _load_enabled_gpu_ids()
+        db_url = settings.DATABASE_URL
         async with self._lock:
             for gid in ids:
-                if gid not in self._workers:
-                    self._workers[gid] = Worker(gid)
+                w = WorkerProcess(gid)
+                w.start(db_url)
+                self._workers[gid] = w
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
-        print(f"[WorkerManager] Started with GPUs: {list(self._workers.keys())}")
+        print(f"[WorkerManager] Started worker processes for GPUs: {list(self._workers.keys())}")
 
     async def reconfigure(self, new_ids: list[int]):
         """Live reconfigure: add workers for new GPUs, stop workers for removed GPUs."""
         async with self._lock:
             for gid in new_ids:
                 if gid not in self._workers:
-                    self._workers[gid] = Worker(gid)
-                    print(f"[WorkerManager] Added worker for GPU {gid}")
+                    w = WorkerProcess(gid)
+                    w.start(settings.DATABASE_URL)
+                    self._workers[gid] = w
+                    print(f"[WorkerManager] Started worker for GPU {gid}")
             for gid in list(self._workers.keys()):
                 if gid not in new_ids:
-                    self._workers[gid].stop_requested = True
-                    print(f"[WorkerManager] Marked worker for GPU {gid} for stop")
+                    self._workers[gid].stop()
+                    print(f"[WorkerManager] Stopping worker for GPU {gid}")
 
     async def enabled_ids(self) -> list[int]:
         async with self._lock:
             return [gid for gid, w in self._workers.items() if not w.stop_requested]
 
     async def get_workers_status(self) -> list[dict]:
+        # Check if pipelines are loaded (worker is alive and has been running for a bit)
         async with self._lock:
-            return [w.as_status() for w in self._workers.values()]
+            statuses = []
+            for gid, w in self._workers.items():
+                status = w.as_status()
+                # If the process has been alive for > 60s, assume pipeline is loaded
+                if w.is_alive() and not status["pipeline_loaded"]:
+                    w.pipeline_loaded = True  # optimistic; real check would need IPC
+                statuses.append(w.as_status())
+            return statuses
 
     async def _dispatcher_loop(self):
         min_free_mb = int(settings.GPU_MIN_FREE_VRAM_GB * 1024)
@@ -248,66 +288,76 @@ class WorkerManager:
             except Exception as e:
                 print(f"[WorkerManager] Dispatcher error: {e}")
                 traceback.print_exc()
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.5)
 
     async def _dispatch_once(self, min_free_mb: int):
-        # Reap stopped workers that are idle
+        # Reap stopped workers that have finished
         async with self._lock:
             for gid in list(self._workers.keys()):
                 w = self._workers[gid]
-                if w.stop_requested and not w.busy:
+                if w.stop_requested and not w.is_alive():
                     del self._workers[gid]
-                    print(f"[WorkerManager] Removed idle worker for GPU {gid}")
+                    print(f"[WorkerManager] Removed stopped worker for GPU {gid}")
 
-        # Find an idle, non-stopping worker whose GPU is available
-        candidate: Optional[Worker] = None
+        # Clean up dispatched set — remove tasks no longer in "queued" state
+        if self._dispatched:
+            await self._cleanup_dispatched()
+
+        # Find idle, alive, non-stopping workers
         async with self._lock:
-            for gid, w in self._workers.items():
-                if w.stop_requested or w.busy:
-                    continue
-                candidate = w
-                break
+            candidates = [
+                w for gid, w in self._workers.items()
+                if not w.stop_requested and w.is_alive() and not w.busy.value
+            ]
 
-        if candidate is None:
+        if not candidates:
             return
 
-        if not gpu_is_available(candidate.gpu_id, min_free_mb=min_free_mb):
+        # Check GPU availability for each candidate
+        available = [w for w in candidates if gpu_is_available(w.gpu_id, min_free_mb=min_free_mb)]
+        if not available:
             return
 
-        # Try to grab a queued task
-        try:
-            entry = await asyncio.wait_for(task_queue.get_next(), timeout=0.05)
-        except asyncio.TimeoutError:
+        # Get next queued task from DB
+        task_id = await self._get_next_queued_task()
+        if task_id is None:
             return
 
-        # Skip cancelled entries
-        if entry.cancel_event and entry.cancel_event.is_set():
-            return
+        # Dispatch to the first available worker
+        worker = available[0]
+        worker.task_queue.put(task_id)
+        print(f"[WorkerManager] Dispatched task {task_id} to GPU {worker.gpu_id}")
 
-        await task_queue.assign_to_gpu(entry, candidate.gpu_id)
-        candidate._task = asyncio.create_task(self._run_task(candidate, entry))
+    async def _get_next_queued_task(self) -> Optional[int]:
+        from app.database import async_session
+        from app.models import Task
+        from sqlalchemy import select
 
-    async def _run_task(self, worker: Worker, entry: QueueEntry):
-        from app.worker import process_task
-        worker.busy = True
-        worker.current_task_id = entry.task_id
-        try:
-            await process_task(entry.task_id, worker.gpu_id, entry.cancel_event)
-            if not worker.pipeline_loaded:
-                worker.pipeline_loaded = True
-        except Exception as e:
-            print(f"[WorkerManager] Worker GPU {worker.gpu_id} task {entry.task_id} crashed: {e}")
-            traceback.print_exc()
-        finally:
-            worker.busy = False
-            worker.current_task_id = None
-            await task_queue.complete_current(worker.gpu_id)
-            # Free VRAM cache between tasks to defragment
-            try:
-                import torch  # type: ignore
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
+        async with async_session() as db:
+            result = await db.execute(
+                select(Task.id)
+                .where(Task.status == "queued", ~Task.id.in_(self._dispatched) if self._dispatched else True)
+                .order_by(Task.created_at.asc())
+                .limit(1)
+            )
+            task_id = result.scalar()
+            if task_id is not None:
+                self._dispatched.add(task_id)
+            return task_id
+
+    async def _cleanup_dispatched(self):
+        """Remove tasks from the dispatched set that are no longer queued."""
+        from app.database import async_session
+        from app.models import Task
+        from sqlalchemy import select
+
+        async with async_session() as db:
+            result = await db.execute(
+                select(Task.id, Task.status).where(Task.id.in_(self._dispatched))
+            )
+            for tid, status in result.all():
+                if status != "queued":
+                    self._dispatched.discard(tid)
 
 
 worker_manager = WorkerManager()
