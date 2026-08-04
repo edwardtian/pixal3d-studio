@@ -44,6 +44,7 @@ class RatingUpdate(BaseModel):
 class TaskResponse(BaseModel):
     id: int
     user_id: int
+    username: Optional[str] = None
     status: str
     progress: str
     progress_step: int

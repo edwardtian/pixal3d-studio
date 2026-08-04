@@ -142,6 +142,7 @@
                     <span style="color:var(--text-dim);font-size:0.8rem;" data-i18n="history.to">to</span>
                     <input type="date" id="filter-date-to" style="background:var(--surface-light);border:1px solid var(--border);color:white;padding:0.4rem;border-radius:var(--radius-sm);font-size:0.8rem;">
                     <button class="btn btn-outline btn-sm" onclick="loadTaskHistory()" data-i18n="history.filter">Filter</button>
+                    <button class="btn btn-danger btn-sm" id="cleanup-btn" onclick="cleanupFailedTasks()" data-i18n="history.cleanup">Clean Up Failed/Cancelled</button>
                 </div>
             </div>
             <div class="task-list" id="task-list"></div>

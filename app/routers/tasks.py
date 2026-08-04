@@ -75,7 +75,7 @@ async def list_tasks(
     from datetime import datetime, timezone
     from sqlalchemy import and_
 
-    query = select(Task)
+    query = select(Task, User.username).join(User, Task.user_id == User.id)
 
     # Non-admins can only see their own tasks
     if user.role != "admin":
@@ -103,7 +103,14 @@ async def list_tasks(
 
     query = query.order_by(Task.created_at.desc())
     result = await db.execute(query)
-    return result.scalars().all()
+    rows = result.all()
+    # Build response dicts with username included
+    out = []
+    for task, username in rows:
+        data = {c.name: getattr(task, c.name) for c in task.__table__.columns}
+        data["username"] = username
+        out.append(data)
+    return out
 
 
 @router.get("/{task_id}", response_model=TaskResponse)
@@ -271,6 +278,73 @@ async def cancel_task(
         task.progress = "Cancelling..."
         await db.commit()
         return {"detail": "Cancel requested; task will stop at the next sub-task boundary", "immediate": False}
+
+
+@router.post("/cleanup")
+async def cleanup_tasks(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: delete all failed and cancelled tasks.
+
+    Also converts tasks stuck in "cancelling" for more than 5 minutes to
+    "failed" before deleting them.
+    """
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select, update as sa_update
+
+    # 1. Find tasks stuck in "cancelling" for > 5 minutes
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    result = await db.execute(
+        select(Task).where(
+            Task.status == "cancelling",
+            (Task.started_at != None) & (Task.started_at < cutoff),
+        )
+    )
+    stuck_tasks = result.scalars().all()
+    for t in stuck_tasks:
+        t.status = "failed"
+        t.error_message = "Task was stuck in cancelling state (timeout > 5 min)"
+        t.completed_at = datetime.now(timezone.utc)
+    if stuck_tasks:
+        await db.commit()
+
+    # 2. Collect all failed and cancelled tasks
+    result = await db.execute(
+        select(Task).where(Task.status.in_(["failed", "cancelled"]))
+    )
+    tasks_to_delete = result.scalars().all()
+    deleted_count = len(tasks_to_delete)
+
+    # 3. Delete associated files
+    for task in tasks_to_delete:
+        if task.output_glb_path:
+            glb_path = settings.OUTPUT_DIR / task.output_glb_path
+            if glb_path.exists():
+                try:
+                    os.remove(glb_path)
+                except Exception:
+                    pass
+        render_dir = settings.RENDERS_DIR / f"task_{task.id}"
+        if render_dir.exists():
+            try:
+                shutil.rmtree(render_dir)
+            except Exception:
+                pass
+
+    # 4. Delete from DB
+    for task in tasks_to_delete:
+        await db.delete(task)
+    await db.commit()
+
+    return {
+        "detail": f"Cleaned up {deleted_count} task(s)",
+        "deleted_count": deleted_count,
+        "stuck_cancelling_fixed": len(stuck_tasks),
+    }
 
 
 @router.patch("/{task_id}/rating", response_model=TaskResponse)

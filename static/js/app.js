@@ -1189,7 +1189,7 @@ async function loadTaskHistory() {
         }
         list.innerHTML = barHtml + tasks.map(task => {
             const statusBadge = `<span class="status-badge status-${task.status}">${tStatus(task.status)}</span>`;
-            const userLabel = currentUser.role === 'admin' ? ` (${t('history.user')} #${task.user_id})` : '';
+            const userLabel = currentUser.role === 'admin' ? ` (${task.username || '?'} #${task.user_id})` : '';
             const canSelect = task.status === 'completed' && task.output_glb_path;
             const isSelected = selectedTaskIds.has(task.id);
             const ratingHtml = task.rating > 0 ? `<span style="color:#fbbf24;">${'★'.repeat(task.rating)}${'☆'.repeat(5-task.rating)}</span>` : '';
@@ -1622,6 +1622,17 @@ async function deleteTask(taskId) {
         } else {
             showToast(t('msg.delete_failed') + err.message);
         }
+    }
+}
+
+async function cleanupFailedTasks() {
+    if (!confirm(t('history.confirm_cleanup'))) return;
+    try {
+        const res = await apiFetch('/tasks/cleanup', { method: 'POST' });
+        showToast(t('history.cleanup_done') + res.deleted_count);
+        loadTaskHistory();
+    } catch (err) {
+        showToast(t('msg.delete_failed') + err.message);
     }
 }
 
