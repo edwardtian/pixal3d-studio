@@ -89,6 +89,36 @@ def migrate(old_path, new_path):
     else:
         print("  WARNING: 'users' table not found.")
 
+    # 3b. Add new sub-task / GPU columns to tasks table
+    if table_exists(cursor, "tasks"):
+        new_task_cols = {
+            "subtask_index": "INTEGER DEFAULT 0",
+            "subtask_total": "INTEGER DEFAULT 6",
+            "subtask_name": "VARCHAR(128) DEFAULT ''",
+            "subtask_step": "INTEGER DEFAULT 0",
+            "subtask_total_steps": "INTEGER DEFAULT 0",
+            "overall_progress": "INTEGER DEFAULT 0",
+            "assigned_gpu": "INTEGER",
+        }
+        for col, typedef in new_task_cols.items():
+            if not column_exists(cursor, "tasks", col):
+                print(f"  Adding '{col}' column to tasks table...")
+                cursor.execute(f"ALTER TABLE tasks ADD COLUMN {col} {typedef}")
+        print("  Task sub-task columns OK.")
+
+    # 3c. Create system_config table if missing
+    if not table_exists(cursor, "system_config"):
+        print("  Creating 'system_config' table...")
+        cursor.execute("""
+            CREATE TABLE system_config (
+                key VARCHAR(64) PRIMARY KEY,
+                value TEXT DEFAULT ''
+            )
+        """)
+        print("  Done.")
+    else:
+        print("  'system_config' table already exists.")
+
     # 4. Print summary
     cursor.execute("SELECT COUNT(*) FROM users")
     user_count = cursor.fetchone()[0]

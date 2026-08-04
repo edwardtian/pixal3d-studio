@@ -47,6 +47,13 @@ class TaskResponse(BaseModel):
     progress: str
     progress_step: int
     progress_total: int
+    subtask_index: int = 0
+    subtask_total: int = 6
+    subtask_name: str = ""
+    subtask_step: int = 0
+    subtask_total_steps: int = 0
+    overall_progress: int = 0
+    assigned_gpu: Optional[int] = None
     rating: int
     input_image_path: str
     parameters: dict[str, Any]
@@ -87,4 +94,53 @@ class PresetResponse(BaseModel):
 class QueueStatus(BaseModel):
     total_waiting: int
     gpu_busy: bool
+    num_busy: int = 0
     your_position: Optional[int]
+    gpus: list[dict] = []
+    active_tasks: list[dict] = []
+
+
+class QueueTaskSummary(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    status: str
+    subtask_index: int = 0
+    subtask_total: int = 6
+    subtask_name: str = ""
+    subtask_step: int = 0
+    subtask_total_steps: int = 0
+    overall_progress: int = 0
+    assigned_gpu: Optional[int] = None
+    queue_position: Optional[int] = None
+    created_at: datetime
+
+
+class GPUInfo(BaseModel):
+    id: int
+    name: str
+    mem_total_mb: int
+    mem_used_mb: int
+    mem_free_mb: int
+    utilization_pct: int
+    enabled: bool
+
+
+class WorkerStatus(BaseModel):
+    gpu_id: int
+    busy: bool
+    current_task_id: Optional[int] = None
+    pipeline_loaded: bool
+    stop_requested: bool
+
+
+class GPUsConfig(BaseModel):
+    enabled_ids: list[int]
+
+
+class GPUsConfigResponse(BaseModel):
+    physical: list[GPUInfo]
+    enabled: list[int]
+    workers: list[WorkerStatus]
+    min_free_vram_gb: float
+    util_threshold: int

@@ -29,6 +29,16 @@ class Task(Base):
     progress = Column(String(256), default="")
     progress_step = Column(Integer, default=0)
     progress_total = Column(Integer, default=0)
+
+    # Sub-task / overall progress tracking
+    subtask_index = Column(Integer, default=0)
+    subtask_total = Column(Integer, default=6)
+    subtask_name = Column(String(128), default="")
+    subtask_step = Column(Integer, default=0)
+    subtask_total_steps = Column(Integer, default=0)
+    overall_progress = Column(Integer, default=0)
+    assigned_gpu = Column(Integer, nullable=True)
+
     rating = Column(Integer, default=0)
 
     input_image_path = Column(String(512), nullable=False)
@@ -48,6 +58,13 @@ class Task(Base):
     completed_at = Column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="tasks")
+
+
+class SystemConfig(Base):
+    __tablename__ = "system_config"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, default="")
 
 
 class Preset(Base):

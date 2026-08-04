@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     LOW_VRAM: bool = False
     ATTN_BACKEND: str = "sdpa"
 
+    # Multi-GPU worker configuration
+    # Comma-separated GPU ids to enable (e.g. "0,1"). Empty = auto-detect all visible GPUs.
+    GPU_IDS: str = ""
+    # Minimum free VRAM (GB) required on a GPU before dispatching a task to it.
+    GPU_MIN_FREE_VRAM_GB: float = 12.0
+    # GPU utilization % above which a GPU is considered too busy to receive a new task.
+    GPU_UTIL_THRESHOLD: int = 95
+
     # HuggingFace model cache — set to /app/models when running in container
     HF_HOME: str = ""
 

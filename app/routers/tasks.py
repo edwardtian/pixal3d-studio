@@ -15,10 +15,8 @@ from app.auth import get_current_user
 from app.config import settings
 from app.parameters import validate_parameters
 from app.queue import task_queue
-from app.worker import start_worker
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
-
 
 @router.post("/upload", response_model=dict)
 async def upload_image(
@@ -62,11 +60,9 @@ async def create_task(
     await db.commit()
     await db.refresh(task)
 
-    await start_worker()
     await task_queue.submit(task.id, user.id)
 
     return task
-
 
 @router.get("", response_model=list[TaskResponse])
 async def list_tasks(
@@ -223,6 +219,12 @@ async def delete_task(
     if task.user_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Not your task")
 
+    if task.status in ("queued", "processing", "cancelling"):
+        raise HTTPException(
+            status_code=409,
+            detail="Task is still queued or processing. Cancel it first.",
+        )
+
     if task.output_glb_path:
         glb_path = settings.OUTPUT_DIR / task.output_glb_path
         if glb_path.exists():
@@ -235,6 +237,40 @@ async def delete_task(
     await db.delete(task)
     await db.commit()
     return {"detail": "Task deleted"}
+
+
+@router.post("/{task_id}/cancel")
+async def cancel_task(
+    task_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalars().first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.user_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not your task")
+
+    if task.status not in ("queued", "processing"):
+        raise HTTPException(status_code=400, detail=f"Cannot cancel task in '{task.status}' state")
+
+    outcome = await task_queue.cancel(task_id)
+    if outcome == "notfound":
+        # Task may have just finished; reflect current status
+        raise HTTPException(status_code=400, detail="Task is not in the queue")
+
+    if outcome == "queued":
+        task.status = "cancelled"
+        task.progress = "Cancelled"
+        task.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+        return {"detail": "Task cancelled", "immediate": True}
+    else:
+        task.status = "cancelling"
+        task.progress = "Cancelling..."
+        await db.commit()
+        return {"detail": "Cancel requested; task will stop at the next sub-task boundary", "immediate": False}
 
 
 @router.patch("/{task_id}/rating", response_model=TaskResponse)

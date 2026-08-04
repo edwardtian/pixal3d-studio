@@ -1314,3 +1314,235 @@ model-viewer {
         height: 200px;
     }
 }
+
+/* ===== Queue Panel (sidebar bottom) ===== */
+.queue-panel {
+    margin-top: auto;
+    background: var(--surface-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.queue-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.6rem 0.85rem;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+}
+
+.queue-panel-header:hover { background: rgba(255, 255, 255, 0.03); }
+
+.queue-panel-title {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.queue-panel-count {
+    background: var(--primary-dark);
+    color: white;
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    min-width: 18px;
+    text-align: center;
+}
+
+.queue-panel-count.zero { background: var(--surface); color: var(--text-dim); }
+
+.queue-panel-chevron {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    transition: transform 0.2s;
+}
+
+.queue-panel.open .queue-panel-chevron { transform: rotate(90deg); }
+
+.queue-panel-body {
+    display: none;
+    padding: 0.4rem 0.6rem 0.6rem;
+    max-height: 340px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+}
+
+.queue-panel.open .queue-panel-body { display: block; }
+
+.queue-gpu-row {
+    display: flex;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+}
+
+.queue-gpu-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    color: var(--accent);
+    border-radius: 10px;
+    padding: 2px 7px;
+    font-size: 0.66rem;
+    font-weight: 600;
+}
+
+.queue-gpu-chip.busy {
+    background: rgba(251, 146, 60, 0.15);
+    border-color: rgba(251, 146, 60, 0.4);
+    color: var(--warning);
+}
+
+.queue-gpu-chip.idle { opacity: 0.7; }
+
+.queue-task-list { display: flex; flex-direction: column; gap: 0.45rem; }
+
+.queue-task-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.45rem 0.55rem;
+}
+
+.queue-task-item-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.queue-task-thumb {
+    width: 28px;
+    height: 28px;
+    border-radius: 5px;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--surface-light);
+}
+
+.queue-task-info { flex: 1; min-width: 0; }
+
+.queue-task-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.queue-task-sub {
+    font-size: 0.66rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+}
+
+.queue-task-cancel {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 2px 4px;
+    font-size: 0.9rem;
+    line-height: 1;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.queue-task-cancel:hover { color: var(--danger); background: rgba(248, 113, 113, 0.1); }
+.queue-task-cancel:disabled { opacity: 0.4; cursor: default; }
+.queue-task-cancel:disabled:hover { color: var(--text-dim); background: none; }
+
+.queue-task-bar-bg {
+    width: 100%;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 0.35rem;
+}
+
+.queue-task-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary), var(--accent));
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+.queue-task-bar-fill.sub {
+    height: 3px;
+    background: var(--primary);
+    opacity: 0.7;
+}
+
+.queue-task-bars { display: flex; flex-direction: column; gap: 2px; margin-top: 0.3rem; }
+
+.queue-empty {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    padding: 0.75rem 0;
+}
+
+/* ===== Progress overlay (upgraded) ===== */
+.progress-subtask-line {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    margin-bottom: 0.6rem;
+}
+
+.progress-subtask-bar { margin-top: 0.6rem; height: 4px; }
+
+.progress-subtask-fill { background: var(--primary); opacity: 0.85; }
+
+/* ===== Status badges for new states ===== */
+.status-cancelling { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+.status-cancelled { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
+
+/* ===== GPU Management ===== */
+.gpu-mem-bar {
+    width: 110px;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 0.4rem;
+}
+
+.gpu-mem-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--warning));
+    border-radius: 3px;
+}
+
+.gpu-util-bar {
+    width: 80px;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 0.4rem;
+}
+
+.gpu-util-bar-fill {
+    height: 100%;
+    background: var(--primary);
+    border-radius: 3px;
+}
+

@@ -64,16 +64,29 @@
             </div>
         </div>
 
-        <div id="queue-badge" class="queue-badge" style="margin-bottom: 1rem;">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg>
-            <span><span data-i18n="queue.label">Queue</span>: <span id="queue-count">0</span></span>
-        </div>
-
         <button class="btn btn-primary btn-full" data-nav-target="create" onclick="navigateTo('create')" style="margin-bottom: 0.5rem;" data-i18n="nav.new_task">New Task</button>
         <button class="btn btn-outline btn-full" data-nav-target="history" onclick="navigateTo('history')" style="margin-bottom: 0.5rem;" data-i18n="nav.task_history">Task History</button>
         <button class="btn btn-outline btn-full" data-nav-target="compare" onclick="navigateTo('compare')" style="margin-bottom: 0.5rem;" data-i18n="nav.compare">Compare</button>
         <button class="btn btn-outline btn-full" data-nav-target="presets" onclick="navigateTo('presets')" style="margin-bottom: 0.5rem;" data-i18n="nav.presets">Presets</button>
         <button class="btn btn-outline btn-full" id="admin-nav-btn" data-nav-target="admin" onclick="navigateTo('admin')" style="display:none; margin-bottom: 0.5rem;" data-i18n="nav.user_management">User Management</button>
+        <button class="btn btn-outline btn-full" id="gpus-nav-btn" data-nav-target="gpus" onclick="navigateTo('gpus')" style="display:none; margin-bottom: 0.5rem;" data-i18n="nav.gpu_management">GPU Management</button>
+
+        <!-- Queue Panel (bottom of sidebar) -->
+        <div id="queue-panel" class="queue-panel">
+            <div class="queue-panel-header" id="queue-panel-toggle" onclick="toggleQueuePanel()">
+                <div class="queue-panel-title">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg>
+                    <span data-i18n="queue.label">Queue</span>
+                    <span class="queue-panel-count" id="queue-count">0</span>
+                </div>
+                <span class="queue-panel-chevron" id="queue-chevron">&#9654;</span>
+            </div>
+            <div class="queue-panel-body" id="queue-panel-body">
+                <div id="queue-gpu-row" class="queue-gpu-row"></div>
+                <div id="queue-task-list" class="queue-task-list"></div>
+                <div id="queue-empty" class="queue-empty" data-i18n="queue.empty">No active tasks</div>
+            </div>
+        </div>
     </div>
 
     <!-- Main content -->
@@ -213,6 +226,41 @@
                 <div id="presets-empty" style="display:none;text-align:center;padding:2rem;color:var(--text-dim);" data-i18n="preset.empty">No presets saved yet.</div>
             </div>
         </div>
+
+        <!-- GPU Management View (admin) -->
+        <div class="view" id="view-gpus">
+            <h2 style="margin-bottom: 1rem;" data-i18n="gpu.title">GPU Management</h2>
+            <div class="detail-section">
+                <p style="font-size:0.8rem;color:var(--text-dim);margin-bottom:1rem;" data-i18n="gpu.description">Select which GPUs may process tasks. Changes apply live.</p>
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th data-i18n="gpu.id">GPU</th>
+                            <th data-i18n="gpu.name">Name</th>
+                            <th data-i18n="gpu.memory">Memory</th>
+                            <th data-i18n="gpu.util">Utilization</th>
+                            <th data-i18n="gpu.status">Status</th>
+                            <th data-i18n="admin.actions">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="gpus-tbody"></tbody>
+                </table>
+            </div>
+            <div class="detail-section" style="margin-top:1rem;">
+                <h3 data-i18n="gpu.workers">Workers</h3>
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th data-i18n="gpu.gpu_id">GPU ID</th>
+                            <th data-i18n="gpu.state">State</th>
+                            <th data-i18n="gpu.current_task">Current Task</th>
+                            <th data-i18n="gpu.pipeline_loaded">Pipeline Loaded</th>
+                        </tr>
+                    </thead>
+                    <tbody id="gpu-workers-tbody"></tbody>
+                </table>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -221,10 +269,15 @@
     <div class="loader-ring"></div>
     <div class="progress-info">
         <div class="progress-stage-name" id="progress-stage">Initializing...</div>
+        <div class="progress-subtask-line" id="progress-subtask-line"></div>
         <div class="progress-bar-bg">
             <div class="progress-bar-fill" id="progress-fill"></div>
         </div>
         <div class="progress-step-text" id="progress-step"></div>
+        <div class="progress-bar-bg progress-subtask-bar">
+            <div class="progress-bar-fill progress-subtask-fill" id="progress-subtask-fill"></div>
+        </div>
+        <div class="progress-step-text" id="progress-subtask-step"></div>
     </div>
 </div>
 

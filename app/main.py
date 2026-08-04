@@ -7,12 +7,14 @@ from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.database import init_db
-from app.routers import auth, users, tasks, parameters, queue, presets
+from app.gpu import worker_manager
+from app.routers import auth, users, tasks, parameters, queue, presets, system
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await worker_manager.start()
     yield
 
 
@@ -24,6 +26,7 @@ app.include_router(tasks.router)
 app.include_router(parameters.router)
 app.include_router(queue.router)
 app.include_router(presets.router)
+app.include_router(system.router)
 
 static_dir = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")

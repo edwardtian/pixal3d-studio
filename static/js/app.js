@@ -8,6 +8,9 @@ let uploadedImageFilename = null;
 let currentDetailView = null;
 let progressInterval = null;
 let queueInterval = null;
+let queuePanelOpen = false;
+let queueTasksCache = [];
+let gpuEnabledSet = new Set();
 
 // Crop state
 let cropRect = null;
@@ -107,6 +110,7 @@ function showMainApp() {
     if (currentUser.role === 'admin') {
         badge.textContent = displayName + t('auth.admin_suffix');
         document.getElementById('admin-nav-btn').style.display = 'flex';
+        document.getElementById('gpus-nav-btn').style.display = 'flex';
     }
 
     loadParameters();
@@ -187,6 +191,7 @@ function navigateTo(view) {
 
     if (view === 'history') loadTaskHistory();
     if (view === 'admin') loadAdminUsers();
+    if (view === 'gpus') loadGpusView();
     if (view === 'compare') loadCompareView();
     if (view === 'presets') loadPresetsView();
 }
@@ -861,8 +866,11 @@ async function submitTask() {
 function showProgress() {
     document.getElementById('progress-overlay').style.display = 'flex';
     document.getElementById('progress-stage').textContent = t('msg.submitting');
+    document.getElementById('progress-subtask-line').textContent = '';
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('progress-step').textContent = '';
+    document.getElementById('progress-subtask-fill').style.width = '0%';
+    document.getElementById('progress-subtask-step').textContent = '';
 }
 
 function hideProgress() {
@@ -876,8 +884,11 @@ function startProgressPolling(taskId) {
             const q = await apiFetch('/queue/status');
             if (q.your_position > 0) {
                 document.getElementById('progress-stage').textContent = t('msg.queue_ahead') + q.your_position + t('msg.queue_ahead_suffix');
-                document.getElementById('progress-step').textContent = t('msg.waiting');
+                document.getElementById('progress-subtask-line').textContent = t('msg.waiting');
                 document.getElementById('progress-fill').style.width = '0%';
+                document.getElementById('progress-step').textContent = '';
+                document.getElementById('progress-subtask-fill').style.width = '0%';
+                document.getElementById('progress-subtask-step').textContent = '';
                 return;
             }
 
@@ -895,32 +906,134 @@ function startProgressPolling(taskId) {
                 showToast(t('msg.task_failed') + task.error_message);
                 return;
             }
+            if (task.status === 'cancelled' || task.status === 'cancelling') {
+                clearInterval(progressInterval);
+                hideProgress();
+                showToast(t('msg.task_cancelled'));
+                return;
+            }
 
+            // Overall progress
+            const ov = task.overall_progress || 0;
             document.getElementById('progress-stage').textContent = task.progress || t('msg.processing');
-            if (task.progress_total > 0) {
-                document.getElementById('progress-step').textContent = `${task.progress_step}/${task.progress_total}`;
-                document.getElementById('progress-fill').style.width = Math.min(100, (task.progress_step / task.progress_total) * 100) + '%';
+            document.getElementById('progress-fill').style.width = Math.min(100, ov) + '%';
+            document.getElementById('progress-step').textContent = ov + '%';
+
+            // Sub-task progress
+            const subLine = (task.subtask_total > 0)
+                ? `${t('progress.subtask')} ${task.subtask_index}/${task.subtask_total}` +
+                  (task.subtask_name ? ' · ' + task.subtask_name : '') +
+                  (task.assigned_gpu != null ? ' · ' + t('progress.on_gpu') + task.assigned_gpu : '')
+                : '';
+            document.getElementById('progress-subtask-line').textContent = subLine;
+            if (task.subtask_total_steps > 0) {
+                document.getElementById('progress-subtask-fill').style.width =
+                    Math.min(100, (task.subtask_step / task.subtask_total_steps) * 100) + '%';
+                document.getElementById('progress-subtask-step').textContent =
+                    task.subtask_step + '/' + task.subtask_total_steps;
             } else {
-                document.getElementById('progress-step').textContent = '';
-                document.getElementById('progress-fill').style.width = '0%';
+                document.getElementById('progress-subtask-fill').style.width = '0%';
+                document.getElementById('progress-subtask-step').textContent = '';
             }
         } catch (e) { /* ignore */ }
     }, 1000);
 }
 
-// ===== Queue polling =====
+// ===== Queue panel =====
+function toggleQueuePanel() {
+    queuePanelOpen = !queuePanelOpen;
+    const panel = document.getElementById('queue-panel');
+    panel.classList.toggle('open', queuePanelOpen);
+}
+
 function startQueuePolling() {
     async function poll() {
         try {
-            const q = await apiFetch('/queue/status');
-            const badge = document.getElementById('queue-badge');
-            const count = q.total_waiting + (q.gpu_busy ? 1 : 0);
-            document.getElementById('queue-count').textContent = count;
-            badge.classList.toggle('busy', count > 0);
+            const [status, tasks] = await Promise.all([
+                apiFetch('/queue/status'),
+                apiFetch('/queue/tasks'),
+            ]);
+            queueTasksCache = tasks || [];
+            gpuEnabledSet = new Set(status.gpus ? status.gpus.filter(g => g.enabled).map(g => g.id) : []);
+
+            // Count badge
+            const count = status.total_waiting + (status.num_busy || 0);
+            const countEl = document.getElementById('queue-count');
+            countEl.textContent = count;
+            countEl.classList.toggle('zero', count === 0);
+
+            // GPU chips
+            const gpuRow = document.getElementById('queue-gpu-row');
+            if (status.gpus && status.gpus.length) {
+                gpuRow.innerHTML = status.gpus.map(g => {
+                    const busy = (status.active_tasks || []).some(a => a.gpu_id === g.id);
+                    const cls = g.enabled ? (busy ? 'busy' : 'idle') : '';
+                    const label = g.enabled ? (busy ? 'GPU ' + g.id + ' · ' + t('queue.busy') : 'GPU ' + g.id) : ('GPU ' + g.id + ' · ' + t('queue.off'));
+                    return `<span class="queue-gpu-chip ${cls}">${label}</span>`;
+                }).join('');
+            } else {
+                gpuRow.innerHTML = '';
+            }
+
+            // Task list
+            const listEl = document.getElementById('queue-task-list');
+            const emptyEl = document.getElementById('queue-empty');
+            if (!queueTasksCache.length) {
+                listEl.innerHTML = '';
+                emptyEl.style.display = 'block';
+            } else {
+                emptyEl.style.display = 'none';
+                listEl.innerHTML = queueTasksCache.map(task => renderQueueTaskItem(task)).join('');
+            }
         } catch (e) { /* ignore */ }
     }
     poll();
-    queueInterval = setInterval(poll, 3000);
+    queueInterval = setInterval(poll, 2000);
+}
+
+function renderQueueTaskItem(task) {
+    const isQueued = task.status === 'queued';
+    const isCancelling = task.status === 'cancelling';
+    const pos = isQueued && task.queue_position != null
+        ? `${t('queue.position')} #${task.queue_position}` : '';
+    const subLine = isQueued
+        ? pos
+        : `${t('progress.subtask')} ${task.subtask_index}/${task.subtask_total}` +
+          (task.subtask_name ? ' · ' + task.subtask_name : '') +
+          (task.assigned_gpu != null ? ' · GPU ' + task.assigned_gpu : '');
+    const userLabel = currentUser.role === 'admin' ? ` (#${task.user_id} ${task.username || ''})` : '';
+    const ov = task.overall_progress || 0;
+    const subPct = task.subtask_total_steps > 0
+        ? Math.min(100, (task.subtask_step / task.subtask_total_steps) * 100) : 0;
+    const subBar = (task.status === 'processing')
+        ? `<div class="queue-task-bar-bg"><div class="queue-task-bar-fill sub" style="width:${subPct}%"></div></div>` : '';
+    const cancelLabel = isCancelling ? t('queue.cancelling') : '✕';
+    const cancelDisabled = isCancelling ? 'disabled' : '';
+    return `
+    <div class="queue-task-item">
+        <div class="queue-task-item-row">
+            <img class="queue-task-thumb" src="${authUrl('/api/tasks/' + task.id + '/image')}" alt="" onerror="this.style.visibility='hidden'">
+            <div class="queue-task-info">
+                <div class="queue-task-title">${t('queue.task')} #${task.id}${userLabel}</div>
+                <div class="queue-task-sub">${subLine}</div>
+            </div>
+            <button class="queue-task-cancel" title="${t('queue.cancel')}" ${cancelDisabled} onclick="cancelTask(${task.id})">${cancelLabel}</button>
+        </div>
+        <div class="queue-task-bars">
+            <div class="queue-task-bar-bg"><div class="queue-task-bar-fill" style="width:${ov}%"></div></div>
+            ${subBar}
+        </div>
+    </div>`;
+}
+
+async function cancelTask(taskId) {
+    if (!confirm(t('queue.confirm_cancel'))) return;
+    try {
+        const res = await apiFetch(`/tasks/${taskId}/cancel`, { method: 'POST' });
+        showToast(res.immediate ? t('queue.cancelled') : t('queue.cancel_requested'));
+    } catch (err) {
+        showToast(t('queue.cancel_failed') + err.message);
+    }
 }
 
 // ===== Zoomable Image =====
@@ -1024,7 +1137,8 @@ async function loadTaskHistory() {
                         <span>${t('history.res')}: ${task.parameters?.resolution || '-'}</span>
                         <span>${t('history.seed')}: ${task.parameters?.seed || '-'}</span>
                     </div>
-                    ${task.status === 'processing' && task.progress ? `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:0.3rem;">${task.progress} ${task.progress_total > 0 ? '(' + task.progress_step + '/' + task.progress_total + ')' : ''}</div>` : ''}
+                    ${task.status === 'processing' ? `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:0.3rem;">${t('progress.subtask')} ${task.subtask_index}/${task.subtask_total}${task.subtask_name ? ' · ' + task.subtask_name : ''}${task.assigned_gpu != null ? ' · GPU ' + task.assigned_gpu : ''} (${task.overall_progress || 0}%)</div>` : ''}
+                    ${task.status === 'cancelling' ? `<div style="font-size:0.72rem;color:var(--warning);margin-top:0.3rem;">${t('queue.cancelling')}</div>` : ''}
                     ${task.status === 'failed' ? `<div style="font-size:0.72rem;color:var(--danger);margin-top:0.3rem;">${task.error_message}</div>` : ''}
                 </div>
             </div>
@@ -1310,7 +1424,22 @@ async function loadTaskDetail(taskId) {
             html += `<div class="empty-state" style="padding:2rem;"><p style="color:var(--danger)">${t('detail.task_failed')}${task.error_message}</p></div>`;
             html += `<div style="margin-top:1rem;"><button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button></div>`;
         } else if (task.status === 'processing') {
-            html += `<div class="empty-state" style="padding:2rem;"><div class="loader-ring" style="margin:0 auto 1rem;"></div><p>${t('detail.processing')}${task.progress}</p></div>`;
+            const ov = task.overall_progress || 0;
+            const subPct = task.subtask_total_steps > 0 ? Math.min(100, (task.subtask_step / task.subtask_total_steps) * 100) : 0;
+            html += `<div class="empty-state" style="padding:2rem;">
+                <div class="loader-ring" style="margin:0 auto 1rem;"></div>
+                <p>${t('detail.processing')}${task.progress}</p>
+                <div style="margin-top:0.75rem;font-size:0.78rem;color:var(--text-dim);">${t('progress.subtask')} ${task.subtask_index}/${task.subtask_total}${task.subtask_name ? ' · ' + task.subtask_name : ''}${task.assigned_gpu != null ? ' · GPU ' + task.assigned_gpu : ''}</div>
+                <div class="progress-bar-bg" style="margin:0.6rem auto;max-width:420px;"><div class="progress-bar-fill" style="width:${ov}%"></div></div>
+                <div style="font-size:0.72rem;color:var(--text-dim);">${ov}%</div>
+                <div class="progress-bar-bg progress-subtask-bar" style="margin:0.4rem auto;max-width:420px;"><div class="progress-bar-fill progress-subtask-fill" style="width:${subPct}%"></div></div>
+                ${task.subtask_total_steps > 0 ? `<div style="font-size:0.7rem;color:var(--text-dim);font-family:monospace;">${task.subtask_step}/${task.subtask_total_steps}</div>` : ''}
+            </div>`;
+            html += `<div style="margin-top:1rem;"><button class="btn btn-danger btn-sm" onclick="cancelTask(${taskId})">${t('queue.cancel')}</button></div>`;
+        } else if (task.status === 'cancelling') {
+            html += `<div class="empty-state" style="padding:2rem;"><div class="loader-ring" style="margin:0 auto 1rem;"></div><p>${t('queue.cancelling')}</p></div>`;
+        } else if (task.status === 'cancelled') {
+            html += `<div class="empty-state" style="padding:2rem;"><p>${tStatus('cancelled')}</p></div>`;
             html += `<div style="margin-top:1rem;"><button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button></div>`;
         } else {
             html += `<div class="empty-state" style="padding:2rem;"><p>${t('detail.task_is')}${tStatus(task.status)}</p></div>`;
@@ -1419,7 +1548,11 @@ async function deleteTask(taskId) {
         navigateTo('history');
         loadTaskHistory();
     } catch (err) {
-        showToast(t('msg.delete_failed') + err.message);
+        if (err.message && err.message.includes('Cancel it first')) {
+            showToast(t('msg.delete_running'));
+        } else {
+            showToast(t('msg.delete_failed') + err.message);
+        }
     }
 }
 
@@ -1518,6 +1651,112 @@ async function deleteUser(userId) {
         loadAdminUsers();
     } catch (err) {
         showToast(t('msg.delete_failed') + err.message);
+    }
+}
+
+// ===== GPU Management (admin) =====
+let gpuPollInterval = null;
+let gpuPendingToggle = new Set();
+
+async function loadGpusView() {
+    if (gpuPollInterval) clearInterval(gpuPollInterval);
+    await refreshGpusView();
+    gpuPollInterval = setInterval(async () => {
+        if (document.getElementById('view-gpus').classList.contains('active')) {
+            await refreshGpusView();
+        } else {
+            clearInterval(gpuPollInterval);
+            gpuPollInterval = null;
+        }
+    }, 3000);
+}
+
+async function refreshGpusView() {
+    try {
+        const data = await apiFetch('/system/gpus');
+        const tbody = document.getElementById('gpus-tbody');
+        tbody.innerHTML = data.physical.map(g => {
+            const memPct = g.mem_total_mb > 0 ? (g.mem_used_mb / g.mem_total_mb) * 100 : 0;
+            const memLabel = g.mem_total_mb > 0
+                ? `${(g.mem_used_mb/1024).toFixed(1)}/${(g.mem_total_mb/1024).toFixed(0)} GB` : '-';
+            const enabled = gpuPendingToggle.has(g.id) ? !data.enabled.includes(g.id) : data.enabled.includes(g.id);
+            const statusLabel = !enabled ? t('gpu.disabled')
+                : (g.utilization_pct >= 50 ? t('gpu.busy') : t('gpu.available'));
+            const statusClass = !enabled ? 'status-queued'
+                : (g.utilization_pct >= 50 ? 'status-processing' : 'status-completed');
+            return `
+            <tr>
+                <td>${g.id}</td>
+                <td style="font-size:0.78rem;">${g.name}</td>
+                <td>
+                    <div class="gpu-mem-bar"><div class="gpu-mem-bar-fill" style="width:${memPct}%"></div></div>
+                    <span style="font-size:0.72rem;color:var(--text-dim);">${memLabel}</span>
+                </td>
+                <td>
+                    <div class="gpu-util-bar"><div class="gpu-util-bar-fill" style="width:${g.utilization_pct}%"></div></div>
+                    <span style="font-size:0.72rem;color:var(--text-dim);">${g.utilization_pct}%</span>
+                </td>
+                <td><span class="status-badge ${statusClass}">${statusLabel}</span></td>
+                <td>
+                    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                        <input type="checkbox" data-gpu-id="${g.id}" ${enabled ? 'checked' : ''} onchange="toggleGpu(${g.id}, this.checked)" style="accent-color:var(--accent);">
+                        <span style="font-size:0.72rem;">${enabled ? t('admin.yes') : t('admin.no')}</span>
+                    </label>
+                </td>
+            </tr>`;
+        }).join('');
+
+        const wbody = document.getElementById('gpu-workers-tbody');
+        if (data.workers && data.workers.length) {
+            wbody.innerHTML = data.workers.map(w => `
+                <tr>
+                    <td>${w.gpu_id}</td>
+                    <td>${w.stop_requested ? t('gpu.stopping') : (w.busy ? t('gpu.busy') : t('gpu.idle'))}</td>
+                    <td>${w.current_task_id != null ? '#' + w.current_task_id : '-'}</td>
+                    <td>${w.pipeline_loaded ? t('admin.yes') : t('admin.no')}</td>
+                </tr>
+            `).join('');
+        } else {
+            wbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-dim);padding:1rem;">${t('gpu.no_workers')}</td></tr>`;
+        }
+    } catch (err) {
+        showToast(t('msg.update_failed') + err.message);
+    }
+}
+
+function toggleGpu(gpuId, enabled) {
+    if (enabled) {
+        gpuPendingToggle.add(gpuId);
+    } else {
+        gpuPendingToggle.delete(gpuId);
+    }
+    saveGpus();
+}
+
+async function saveGpus() {
+    // Build the desired set from the current checkboxes
+    const checkboxes = document.querySelectorAll('#gpus-tbody input[type=checkbox]');
+    const desired = [];
+    checkboxes.forEach(cb => {
+        if (cb.checked) desired.push(parseInt(cb.dataset.gpuId, 10));
+    });
+    if (desired.length === 0) {
+        showToast(t('gpu.need_one'));
+        refreshGpusView();
+        return;
+    }
+    try {
+        await apiFetch('/system/gpus', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled_ids: desired }),
+        });
+        gpuPendingToggle.clear();
+        showToast(t('gpu.saved'));
+        refreshGpusView();
+    } catch (err) {
+        showToast(t('msg.update_failed') + err.message);
+        refreshGpusView();
     }
 }
 

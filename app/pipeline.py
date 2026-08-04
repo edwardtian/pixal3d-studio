@@ -5,7 +5,7 @@ import threading
 import numpy as np
 import torch
 from PIL import Image
-from typing import Any
+from typing import Any, Optional
 
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -18,8 +18,13 @@ if settings.HF_HOME:
     os.environ["HF_HOME"] = settings.HF_HOME
 
 _init_lock = threading.Lock()
-_pipeline = None
-_moge_model = None
+# Per-GPU pipeline cache: gpu_id -> {"pipeline":..., "moge":...}
+_pipelines: dict[int, dict] = {}
+
+
+class CancelledError(Exception):
+    """Raised when a task is cancelled between sub-tasks."""
+    pass
 
 IMAGE_COND_CONFIGS = {
     "ss": {
@@ -82,11 +87,18 @@ def _load_moge_model(device="cuda"):
     return model
 
 
-def init_pipeline():
-    global _pipeline, _moge_model
+def _device_for(gpu_id: int) -> torch.device:
+    return torch.device(f"cuda:{gpu_id}")
+
+
+def init_pipeline(gpu_id: int = 0):
+    """Load the Pixal3D pipeline + MoGe-2 onto the given GPU (cached per gpu_id)."""
+    global _pipelines
     with _init_lock:
-        if _pipeline is not None:
-            return
+        if gpu_id in _pipelines:
+            return _pipelines[gpu_id]
+
+        device = _device_for(gpu_id)
 
         os.environ["ATTN_BACKEND"] = settings.ATTN_BACKEND
 
@@ -95,40 +107,52 @@ def init_pipeline():
         except ImportError:
             from trellis2.pipelines import Pixal3DImageTo3DPipeline
 
-        print(f"[Pipeline] Loading from {settings.PIXAL3D_MODEL_PATH}...")
-        _pipeline = Pixal3DImageTo3DPipeline.from_pretrained(settings.PIXAL3D_MODEL_PATH)
+        print(f"[Pipeline] Loading from {settings.PIXAL3D_MODEL_PATH} onto {device}...")
+        pipeline = Pixal3DImageTo3DPipeline.from_pretrained(settings.PIXAL3D_MODEL_PATH)
 
         print("[ImageCond] Building DinoV3ProjFeatureExtractor models...")
-        _pipeline.image_cond_model_ss = _build_image_cond_model(IMAGE_COND_CONFIGS["ss"])
-        _pipeline.image_cond_model_shape_512 = _build_image_cond_model(IMAGE_COND_CONFIGS["shape_512"])
-        _pipeline.image_cond_model_shape_1024 = _build_image_cond_model(IMAGE_COND_CONFIGS["shape_1024"])
-        _pipeline.image_cond_model_tex_1024 = _build_image_cond_model(IMAGE_COND_CONFIGS["tex_1024"])
+        pipeline.image_cond_model_ss = _build_image_cond_model(IMAGE_COND_CONFIGS["ss"])
+        pipeline.image_cond_model_shape_512 = _build_image_cond_model(IMAGE_COND_CONFIGS["shape_512"])
+        pipeline.image_cond_model_shape_1024 = _build_image_cond_model(IMAGE_COND_CONFIGS["shape_1024"])
+        pipeline.image_cond_model_tex_1024 = _build_image_cond_model(IMAGE_COND_CONFIGS["tex_1024"])
 
         if settings.LOW_VRAM:
             for attr in ['image_cond_model_ss', 'image_cond_model_shape_512',
                          'image_cond_model_shape_1024', 'image_cond_model_tex_1024']:
-                m = getattr(_pipeline, attr, None)
+                m = getattr(pipeline, attr, None)
                 if m is not None and getattr(m, 'use_naf_upsample', False):
                     m._load_naf()
-            _pipeline._device = torch.device("cuda")
-            _pipeline.low_vram = True
-            print("[Pipeline] Low-VRAM mode enabled.")
+            pipeline._device = device
+            pipeline.low_vram = True
+            print(f"[Pipeline] Low-VRAM mode enabled on {device}.")
         else:
-            _pipeline.low_vram = False
-            _pipeline.cuda()
-            _pipeline.image_cond_model_ss.cuda()
-            _pipeline.image_cond_model_shape_512.cuda()
-            _pipeline.image_cond_model_shape_1024.cuda()
-            _pipeline.image_cond_model_tex_1024.cuda()
+            pipeline.low_vram = False
+            # The pipeline's .cuda() doesn't accept a device argument, so set
+            # the current CUDA device first — subsequent .cuda() calls target it.
+            torch.cuda.set_device(device)
+            pipeline.cuda()
+            pipeline.image_cond_model_ss.cuda()
+            pipeline.image_cond_model_shape_512.cuda()
+            pipeline.image_cond_model_shape_1024.cuda()
+            pipeline.image_cond_model_tex_1024.cuda()
+            pipeline._device = device
             for attr in ['image_cond_model_ss', 'image_cond_model_shape_512',
                          'image_cond_model_shape_1024', 'image_cond_model_tex_1024']:
-                m = getattr(_pipeline, attr, None)
+                m = getattr(pipeline, attr, None)
                 if m is not None and getattr(m, 'use_naf_upsample', False):
                     m._load_naf()
-            print("[Pipeline] Standard mode (all models on GPU).")
+            print(f"[Pipeline] Standard mode (all models on {device}).")
 
-        print("[MoGe-2] Loading model for camera estimation...")
-        _moge_model = _load_moge_model(device="cuda")
+        print(f"[MoGe-2] Loading model for camera estimation onto {device}...")
+        moge = _load_moge_model(device=str(device))
+
+        entry = {"pipeline": pipeline, "moge": moge, "device": device}
+        _pipelines[gpu_id] = entry
+        return entry
+
+
+def get_pipeline(gpu_id: int):
+    return init_pipeline(gpu_id)
 
 
 def _compute_f_pixels(camera_angle_x: float, resolution: int) -> float:
@@ -150,13 +174,17 @@ def _distance_from_fov(camera_angle_x, grid_point, target_point, mesh_scale, ima
     return {"distance_from_x": float(distance_x), "f_pixels": float(f_pixels)}
 
 
-def _get_camera_params(image_path, mesh_scale=1.0, extend_pixel=0, image_resolution=512):
+def _get_camera_params(image_path, mesh_scale=1.0, extend_pixel=0, image_resolution=512, gpu_id: int = 0):
+    entry = init_pipeline(gpu_id)
+    moge = entry["moge"]
+    device = entry["device"]
+    torch.cuda.set_device(device)
     pil_image = Image.open(image_path).convert("RGB")
     width, height = pil_image.size
     image_np = np.array(pil_image).astype(np.float32) / 255.0
-    image_tensor = torch.from_numpy(image_np).permute(2, 0, 1).to("cuda")
+    image_tensor = torch.from_numpy(image_np).permute(2, 0, 1).to(device)
     with torch.no_grad():
-        output = _moge_model.infer(image_tensor)
+        output = moge.infer(image_tensor)
     intrinsics = output["intrinsics"].squeeze().cpu().numpy()
     fx_normalized = intrinsics[0, 0]
     fx = fx_normalized * width
@@ -173,9 +201,26 @@ def _get_camera_params(image_path, mesh_scale=1.0, extend_pixel=0, image_resolut
 
 class ProgressCallback:
     def __init__(self):
+        self.subtask_index = 0
+        self.subtask_name = ""
+        self.subtask_step = 0
+        self.subtask_total_steps = 0
+        # Legacy single progress fields (kept for compatibility / DB columns
+        # progress_step / progress_total which we still mirror).
         self.stage = ""
         self.step = 0
         self.total = 0
+
+    def update_subtask(self, subtask_index: int, subtask_name: str,
+                       subtask_step: int, subtask_total_steps: int):
+        self.subtask_index = subtask_index
+        self.subtask_name = subtask_name
+        self.subtask_step = subtask_step
+        self.subtask_total_steps = subtask_total_steps
+        # Mirror legacy fields
+        self.stage = subtask_name
+        self.step = subtask_step
+        self.total = subtask_total_steps
 
     def update(self, stage: str, step: int, total: int):
         self.stage = stage
@@ -183,10 +228,13 @@ class ProgressCallback:
         self.total = total
 
 
-def preprocess_image(image_path: str) -> str:
-    init_pipeline()
+def preprocess_image(image_path: str, gpu_id: int = 0) -> str:
+    entry = init_pipeline(gpu_id)
+    pipeline = entry["pipeline"]
+    device = entry["device"]
+    torch.cuda.set_device(device)
     img = Image.open(image_path)
-    processed = _pipeline.preprocess_image(img)
+    processed = pipeline.preprocess_image(img)
     out_path = str(settings.UPLOAD_DIR / f"preprocessed_{int(time.time()*1000)}.png")
     processed.save(out_path)
     return out_path
@@ -197,6 +245,8 @@ def generate_3d(
     params: dict,
     progress: ProgressCallback,
     renders_dir: str,
+    gpu_id: int = 0,
+    cancel_event: Optional[threading.Event] = None,
 ) -> dict:
     import o_voxel
     try:
@@ -209,7 +259,14 @@ def generate_3d(
         from trellis2.renderers import EnvMap
     import cv2
 
-    init_pipeline()
+    entry = init_pipeline(gpu_id)
+    pipeline = entry["pipeline"]
+    device = entry["device"]
+    torch.cuda.set_device(device)
+
+    def _check_cancel():
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError("Task cancelled")
 
     torch.manual_seed(params["seed"])
     hr_resolution = int(params["resolution"])
@@ -217,7 +274,8 @@ def generate_3d(
     img = Image.open(preprocessed_image_path)
     image_preprocessed = img
 
-    progress.update("Preprocessing & Camera Estimation", 0, 1)
+    # ---- Sub-task 1: Preprocessing & Camera Estimation ----
+    progress.update_subtask(1, "Preprocessing & Camera Estimation", 0, 1)
 
     manual_fov = params.get("manual_fov", -1.0)
     fov_unit = params.get("fov_unit", "deg")
@@ -241,10 +299,11 @@ def generate_3d(
         camera_params = _get_camera_params(
             preprocessed_image_path,
             mesh_scale=mesh_scale, extend_pixel=extend_pixel,
-            image_resolution=image_resolution,
+            image_resolution=image_resolution, gpu_id=gpu_id,
         )
 
-    progress.update("Preprocessing & Camera Estimation", 1, 1)
+    progress.update_subtask(1, "Preprocessing & Camera Estimation", 1, 1)
+    _check_cancel()
 
     ss_sampler_override = {
         "steps": params["ss_sampling_steps"],
@@ -267,8 +326,14 @@ def generate_3d(
 
     pipeline_type = f"{hr_resolution}_cascade"
 
-    progress.update("Generating 3D (Stage 1: Sparse Structure)", 0, 1)
-    mesh_list, (shape_slat, tex_slat, res) = _pipeline.run(
+    # ---- Sub-task 2/3/4: Sparse Structure, Shape, Texture ----
+    # We cannot easily intercept the internal per-stage step callbacks of the
+    # monolithic _pipeline.run(), so we report the three stages with an
+    # indeterminate within-subtask bar (0/0) while the call is in flight, and
+    # mark each complete right after. The overall progress still advances by
+    # the stage weights as each completes.
+    progress.update_subtask(2, "Stage 1: Sparse Structure", 0, params["ss_sampling_steps"])
+    mesh_list, (shape_slat, tex_slat, res) = pipeline.run(
         image_preprocessed,
         camera_params=camera_params,
         seed=params["seed"],
@@ -282,6 +347,7 @@ def generate_3d(
     )
 
     mesh = mesh_list[0]
+    _check_cancel()
 
     state_data = {
         'shape_slat_feats': shape_slat.feats.cpu().numpy(),
@@ -292,7 +358,8 @@ def generate_3d(
     state_path = os.path.join(renders_dir, f"state_{int(time.time()*1000)}.npz")
     np.savez_compressed(state_path, **state_data)
 
-    progress.update("Rendering preview views", 0, 1)
+    # ---- Sub-task 5: Rendering preview views ----
+    progress.update_subtask(5, "Rendering preview views", 0, 1)
     mesh.simplify(16777216)
     cam_dist = camera_params['distance']
     near = max(0.01, cam_dist - 2.0)
@@ -306,7 +373,7 @@ def generate_3d(
         if os.path.exists(hdri_path):
             envmap[name] = EnvMap(torch.tensor(
                 cv2.cvtColor(cv2.imread(hdri_path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB),
-                dtype=torch.float32, device='cuda'
+                dtype=torch.float32, device=device
             ))
 
     renders = render_utils.render_proj_aligned_video(
@@ -315,7 +382,8 @@ def generate_3d(
         num_frames=8, envmap=envmap if envmap else None,
         near=near, far=far,
     )
-    progress.update("Rendering preview views", 1, 1)
+    progress.update_subtask(5, "Rendering preview views", 1, 1)
+    _check_cancel()
 
     render_files = {}
     for mode_key, frames in renders.items():
@@ -340,6 +408,8 @@ def extract_glb(
     texture_size: int,
     progress: ProgressCallback,
     output_path: str,
+    gpu_id: int = 0,
+    cancel_event: Optional[threading.Event] = None,
 ):
     import o_voxel
     try:
@@ -347,25 +417,39 @@ def extract_glb(
     except ImportError:
         from trellis2.modules.sparse import SparseTensor
 
-    init_pipeline()
+    entry = init_pipeline(gpu_id)
+    pipeline = entry["pipeline"]
+    device = entry["device"]
+    torch.cuda.set_device(device)
+
+    def _check_cancel():
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError("Task cancelled")
+
+    # GLB extraction has 12 internal steps; we report them as the within-subtask
+    # progress for sub-task 6.
+    GLB_STEPS = 12
+
+    def _glb_progress(step: int):
+        progress.update_subtask(6, "GLB Extraction", step, GLB_STEPS)
+        _check_cancel()
 
     print("[GLB] Decoding latent...", flush=True)
-    progress.update("Decoding latent", 0, 1)
+    _glb_progress(0)
     data = np.load(state_path)
     shape_slat = SparseTensor(
-        feats=torch.from_numpy(data['shape_slat_feats']).cuda(),
-        coords=torch.from_numpy(data['coords']).cuda(),
+        feats=torch.from_numpy(data['shape_slat_feats']).to(device),
+        coords=torch.from_numpy(data['coords']).to(device),
     )
-    tex_slat = shape_slat.replace(torch.from_numpy(data['tex_slat_feats']).cuda())
+    tex_slat = shape_slat.replace(torch.from_numpy(data['tex_slat_feats']).to(device))
     res = int(data['res'])
 
     print(f"[GLB] decode_latent(res={res})...", flush=True)
-    mesh_decode = _pipeline.decode_latent(shape_slat, tex_slat, res)[0]
+    mesh_decode = pipeline.decode_latent(shape_slat, tex_slat, res)[0]
     print(f"[GLB] Mesh decoded: {len(mesh_decode.vertices)} verts, {len(mesh_decode.faces)} faces", flush=True)
-    progress.update("Decoding latent", 1, 1)
+    _glb_progress(1)
 
     print(f"[GLB] to_glb(decimation={decimation_target}, texture={texture_size}, remesh=False)...", flush=True)
-    progress.update("Extracting GLB mesh", 0, 1)
 
     # Manual step-by-step GLB extraction for debugging
     import cumesh
@@ -375,26 +459,30 @@ def extract_glb(
     import trimesh.visual
     import cv2
 
-    aabb_t = torch.tensor([[-0.5,-0.5,-0.5],[0.5,0.5,0.5]], dtype=torch.float32, device='cuda')
-    gs = torch.tensor([res,res,res], dtype=torch.int32, device='cuda')
+    aabb_t = torch.tensor([[-0.5,-0.5,-0.5],[0.5,0.5,0.5]], dtype=torch.float32, device=device)
+    gs = torch.tensor([res,res,res], dtype=torch.int32, device=device)
     voxel_size = (aabb_t[1] - aabb_t[0]) / gs
 
     print("[GLB] Step 1: init CuMesh...", flush=True)
     mesh = cumesh.CuMesh()
     mesh.init(vertices=mesh_decode.vertices, faces=mesh_decode.faces)
+    _glb_progress(2)
 
     print(f"[GLB] Step 2: fill_holes ({mesh.num_vertices} verts, {mesh.num_faces} faces)...", flush=True)
     mesh.fill_holes(max_hole_perimeter=3e-2)
     print(f"[GLB]   -> {mesh.num_vertices} verts, {mesh.num_faces} faces", flush=True)
+    _glb_progress(3)
 
     print("[GLB] Step 3: build BVH...", flush=True)
     v2, f2 = mesh.read()
     bvh = cumesh.cuBVH(v2, f2)
     print("[GLB]   BVH done", flush=True)
+    _glb_progress(4)
 
     print("[GLB] Step 4: simplify (3x target)...", flush=True)
     mesh.simplify(decimation_target * 3, verbose=True)
     print(f"[GLB]   -> {mesh.num_vertices} verts, {mesh.num_faces} faces", flush=True)
+    _glb_progress(5)
 
     print("[GLB] Step 5: cleanup topology...", flush=True)
     mesh.remove_duplicate_faces()
@@ -402,10 +490,12 @@ def extract_glb(
     mesh.remove_small_connected_components(1e-5)
     mesh.fill_holes(max_hole_perimeter=3e-2)
     print(f"[GLB]   -> {mesh.num_vertices} verts, {mesh.num_faces} faces", flush=True)
+    _glb_progress(6)
 
     print("[GLB] Step 6: simplify (target)...", flush=True)
     mesh.simplify(decimation_target, verbose=True)
     print(f"[GLB]   -> {mesh.num_vertices} verts, {mesh.num_faces} faces", flush=True)
+    _glb_progress(7)
 
     print("[GLB] Step 7: final cleanup...", flush=True)
     mesh.remove_duplicate_faces()
@@ -414,6 +504,7 @@ def extract_glb(
     mesh.fill_holes(max_hole_perimeter=3e-2)
     mesh.unify_face_orientations()
     print(f"[GLB]   -> {mesh.num_vertices} verts, {mesh.num_faces} faces", flush=True)
+    _glb_progress(8)
 
     print("[GLB] Step 8: UV unwrap...", flush=True)
     out_vertices, out_faces, out_uvs, out_vmaps = mesh.uv_unwrap(
@@ -426,18 +517,19 @@ def extract_glb(
         return_vmaps=True,
         verbose=True,
     )
-    out_vertices = out_vertices.cuda()
-    out_faces = out_faces.cuda()
-    out_uvs = out_uvs.cuda()
-    out_vmaps = out_vmaps.cuda()
+    out_vertices = out_vertices.to(device)
+    out_faces = out_faces.to(device)
+    out_uvs = out_uvs.to(device)
+    out_vmaps = out_vmaps.to(device)
     mesh.compute_vertex_normals()
     out_normals = mesh.read_vertex_normals()[out_vmaps]
     print(f"[GLB]   UV done: {out_vertices.shape[0]} verts, {out_faces.shape[0]} faces", flush=True)
+    _glb_progress(9)
 
     print("[GLB] Step 9: texture baking...", flush=True)
     ctx = dr.RasterizeCudaContext()
     uvs_rast = torch.cat([out_uvs * 2 - 1, torch.zeros_like(out_uvs[:, :1]), torch.ones_like(out_uvs[:, :1])], dim=-1).unsqueeze(0)
-    rast = torch.zeros((1, texture_size, texture_size, 4), device='cuda', dtype=torch.float32)
+    rast = torch.zeros((1, texture_size, texture_size, 4), device=device, dtype=torch.float32)
     for i in range(0, out_faces.shape[0], 100000):
         rast_chunk, _ = dr.rasterize(ctx, uvs_rast, out_faces[i:i+100000], resolution=[texture_size, texture_size])
         mask_chunk = rast_chunk[..., 3:4] > 0
@@ -449,7 +541,7 @@ def extract_glb(
     _, face_id, uvw = bvh.unsigned_distance(valid_pos, return_uvw=True)
     orig_tri_verts = v2[f2[face_id.long()]]
     valid_pos = (orig_tri_verts * uvw.unsqueeze(-1)).sum(dim=1)
-    attrs = torch.zeros(texture_size, texture_size, mesh_decode.attrs.shape[1], device='cuda')
+    attrs = torch.zeros(texture_size, texture_size, mesh_decode.attrs.shape[1], device=device)
     attrs[mask] = grid_sample_3d(
         mesh_decode.attrs,
         torch.cat([torch.zeros_like(mesh_decode.coords[:, :1]), mesh_decode.coords], dim=-1),
@@ -458,9 +550,10 @@ def extract_glb(
         mode='trilinear',
     )
     print("[GLB]   texture baked", flush=True)
+    _glb_progress(10)
 
     print("[GLB] Step 10: finalize texture...", flush=True)
-    attr_layout = _pipeline.pbr_attr_layout
+    attr_layout = pipeline.pbr_attr_layout
     mask_np = mask.cpu().numpy()
     base_color = np.clip(attrs[..., attr_layout['base_color']].cpu().numpy() * 255, 0, 255).astype(np.uint8)
     metallic = np.clip(attrs[..., attr_layout['metallic']].cpu().numpy() * 255, 0, 255).astype(np.uint8)
@@ -490,10 +583,11 @@ def extract_glb(
         vertices=vertices_np, faces=faces_np, vertex_normals=normals_np,
         process=False, visual=trimesh.visual.TextureVisuals(uv=uvs_np, material=material)
     )
+    _glb_progress(11)
 
     print(f"[GLB] Step 12: export to {output_path}...", flush=True)
     rot = np.array([[-1,0,0,0],[0,0,-1,0],[0,-1,0,0],[0,0,0,1]], dtype=np.float64)
     glb.apply_transform(rot)
     glb.export(output_path, extension_webp=True)
     print("[GLB] Done!", flush=True)
-    progress.update("Extracting GLB mesh", 1, 1)
+    _glb_progress(12)
