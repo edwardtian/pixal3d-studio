@@ -99,6 +99,11 @@ def migrate(old_path, new_path):
             "subtask_total_steps": "INTEGER DEFAULT 0",
             "overall_progress": "INTEGER DEFAULT 0",
             "assigned_gpu": "INTEGER",
+            "parent_task_id": "INTEGER",
+            "refine_preset": "VARCHAR(64) DEFAULT ''",
+            "output_glb_path_refined": "VARCHAR(512) DEFAULT ''",
+            "refine_status": "VARCHAR(32) DEFAULT ''",
+            "refine_report": "JSON",
         }
         for col, typedef in new_task_cols.items():
             if not column_exists(cursor, "tasks", col):

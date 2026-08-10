@@ -181,6 +181,7 @@ class WorkerProcess:
         self.process: Optional[mp.Process] = None
         self.stop_requested = False
         self.pipeline_loaded = False
+        self.task_start_time: Optional[float] = None  # monotonic time when current task started
 
     def start(self, db_url: str):
         self.process = _mp_ctx.Process(
@@ -197,6 +198,13 @@ class WorkerProcess:
             self.task_queue.put(None)  # shutdown signal
         except Exception:
             pass
+
+    def kill(self):
+        """Force-kill the worker process (for watchdog timeout)."""
+        if self.process and self.process.is_alive():
+            print(f"[WorkerManager] Force-killing worker on GPU {self.gpu_id} (timeout)", flush=True)
+            self.process.kill()
+            self.process.join(timeout=5)
 
     def is_alive(self) -> bool:
         return self.process is not None and self.process.is_alive()
@@ -248,6 +256,7 @@ class WorkerManager:
                 w.start(db_url)
                 self._workers[gid] = w
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
         print(f"[WorkerManager] Started worker processes for GPUs: {list(self._workers.keys())}")
 
     async def reconfigure(self, new_ids: list[int]):
@@ -326,7 +335,65 @@ class WorkerManager:
         # Dispatch to the first available worker
         worker = available[0]
         worker.task_queue.put(task_id)
+        worker.task_start_time = __import__('time').monotonic()
         print(f"[WorkerManager] Dispatched task {task_id} to GPU {worker.gpu_id}")
+
+    async def _watchdog_loop(self):
+        """Watch for stuck tasks. If a task runs longer than TASK_TIMEOUT_MINUTES,
+        kill the worker process, mark the task as failed, and restart the worker."""
+        timeout_sec = int(getattr(settings, 'TASK_TIMEOUT_MINUTES', 30) * 60)
+        while True:
+            try:
+                import time
+                async with self._lock:
+                    for gid, w in list(self._workers.items()):
+                        if not w.busy.value or not w.is_alive():
+                            w.task_start_time = None
+                            continue
+                        if w.task_start_time is None:
+                            w.task_start_time = time.monotonic()
+                            continue
+                        elapsed = time.monotonic() - w.task_start_time
+                        if elapsed > timeout_sec:
+                            task_id = int(w.current_task_id.value)
+                            print(f"[Watchdog] Task {task_id} on GPU {gid} timed out "
+                                  f"({elapsed/60:.1f} min > {timeout_sec/60:.0f} min), killing worker",
+                                  flush=True)
+                            # Mark task as failed in DB
+                            await self._mark_task_failed(task_id, 
+                                f"Task timed out after {elapsed/60:.1f} minutes (likely GPU hang)")
+                            # Kill and restart the worker
+                            w.kill()
+                            w.task_start_time = None
+                            # Restart the worker
+                            w2 = WorkerProcess(gid)
+                            w2.start(settings.DATABASE_URL)
+                            self._workers[gid] = w2
+                            print(f"[WorkerManager] Restarted worker for GPU {gid}", flush=True)
+            except Exception as e:
+                print(f"[Watchdog] Error: {e}")
+                traceback.print_exc()
+            await asyncio.sleep(10)
+
+    async def _mark_task_failed(self, task_id: int, error_msg: str):
+        from app.database import async_session
+        from app.models import Task
+        from sqlalchemy import update
+        from datetime import datetime, timezone
+
+        try:
+            async with async_session() as db:
+                await db.execute(
+                    update(Task).where(Task.id == task_id).values(
+                        status="failed",
+                        error_message=error_msg,
+                        progress="Timed out",
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                )
+                await db.commit()
+        except Exception as e:
+            print(f"[Watchdog] Failed to mark task {task_id} as failed: {e}")
 
     async def _get_next_queued_task(self) -> Optional[int]:
         from app.database import async_session

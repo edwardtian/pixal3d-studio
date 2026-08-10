@@ -27,6 +27,12 @@ async def _auto_migrate():
         "subtask_total_steps": "INTEGER DEFAULT 0",
         "overall_progress": "INTEGER DEFAULT 0",
         "assigned_gpu": "INTEGER",
+        # Refine pass columns (added for the post-process pipeline)
+        "parent_task_id": "INTEGER",
+        "refine_preset": "VARCHAR(64) DEFAULT ''",
+        "output_glb_path_refined": "VARCHAR(512) DEFAULT ''",
+        "refine_status": "VARCHAR(32) DEFAULT ''",
+        "refine_report": "JSON",
     }
     new_preset_columns = {
         "is_public": "BOOLEAN DEFAULT 0",

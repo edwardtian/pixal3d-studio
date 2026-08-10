@@ -101,13 +101,17 @@ def _process_task(task_id: int, gpu_id: int, Session):
     from app.config import settings
     from app.models import Task
     from app.parameters import validate_parameters
-    from app.stages import SUBTASK_TOTAL, overall_progress
+    from app.stages import SUBTASK_TOTAL, SUBTASK_REFINE_TOTAL, overall_progress
 
     cancel_event = threading.Event()
     stop_monitor = threading.Event()
 
     # Progress monitor thread — writes progress to DB every 0.5s
     progress = ProgressCallback()
+
+    # Whether this task is a refine pass is determined later inside the try
+    # block; the monitor reads it via this shared holder.
+    state = {"is_refine": False}
 
     def progress_monitor():
         while not stop_monitor.is_set():
@@ -116,14 +120,16 @@ def _process_task(task_id: int, gpu_id: int, Session):
                     progress.subtask_index,
                     progress.subtask_step,
                     progress.subtask_total_steps,
+                    refine=state["is_refine"],
                 )
+                subtask_total = SUBTASK_REFINE_TOTAL if state["is_refine"] else SUBTASK_TOTAL
                 with Session() as db:
                     db.execute(update(Task).where(Task.id == task_id).values(
                         progress=progress.stage or progress.subtask_name,
                         progress_step=progress.step,
                         progress_total=progress.total,
                         subtask_index=progress.subtask_index,
-                        subtask_total=SUBTASK_TOTAL,
+                        subtask_total=subtask_total,
                         subtask_name=progress.subtask_name,
                         subtask_step=progress.subtask_step,
                         subtask_total_steps=progress.subtask_total_steps,
@@ -171,10 +177,18 @@ def _process_task(task_id: int, gpu_id: int, Session):
                 print(f"[Worker GPU {gpu_id}] Task {task_id} was already cancelled, skipping.", flush=True)
                 return
 
+            # Dispatch: a task with a parent_task_id is a refine pass.
+            is_refine = task.parent_task_id is not None
+            state["is_refine"] = is_refine
+
             task.status = "processing"
             task.started_at = datetime.now(timezone.utc)
             task.assigned_gpu = gpu_id
-            task.subtask_total = SUBTASK_TOTAL
+            if is_refine:
+                task.subtask_total = SUBTASK_REFINE_TOTAL
+                task.refine_status = "processing"
+            else:
+                task.subtask_total = SUBTASK_TOTAL
             task.subtask_index = 0
             task.subtask_name = "Initializing"
             task.progress = "Initializing..."
@@ -183,6 +197,11 @@ def _process_task(task_id: int, gpu_id: int, Session):
 
             params = validate_parameters(task.parameters)
             input_image_path = str(settings.UPLOAD_DIR / task.input_image_path)
+
+        if is_refine:
+            _process_refine(task_id, gpu_id, Session, progress, cancel_event,
+                            stop_monitor)
+            return
 
         if cancel_event.is_set():
             raise CancelledError("Task cancelled")
@@ -299,3 +318,121 @@ def _cleanup_cancelled(task_id: int, renders_dir: str):
             shutil.rmtree(renders_dir, ignore_errors=True)
     except Exception:
         pass
+
+
+def _process_refine(task_id: int, gpu_id: int, Session, progress, cancel_event,
+                    stop_monitor):
+    """Run the post-process refine pipeline against a parent task's saved
+    latent. Skips generation stages 1–5; only runs the refine stages."""
+    from sqlalchemy import select, update
+    from app.config import settings
+    from app.models import Task
+    from app.postprocess import run_refine
+    from app.pipeline import CancelledError
+    from app.stages import SUBTASK_REFINE_TOTAL, overall_progress
+
+    try:
+        # Load the refine task + its parent (for the saved latent path).
+        with Session() as db:
+            task = db.execute(
+                select(Task).where(Task.id == task_id)
+            ).scalar_one_or_none()
+            if task is None:
+                return
+            parent_id = task.parent_task_id
+            parent = db.execute(
+                select(Task).where(Task.id == parent_id)
+            ).scalar_one_or_none()
+            if parent is None:
+                raise RuntimeError(f"Parent task {parent_id} not found")
+            if not parent.state_path or not os.path.exists(parent.state_path):
+                raise RuntimeError(
+                    f"Parent task {parent_id} latent state is missing — cannot refine. "
+                    "The original generation must have completed and saved its state."
+                )
+            state_path = parent.state_path
+            params = task.parameters or {}
+            refine_preset = task.refine_preset or params.get("refine_preset", "game_engine")
+
+        print(f"[Worker GPU {gpu_id}] Refine task {task_id} (parent={parent_id}, "
+              f"preset={refine_preset})", flush=True)
+
+        glb_path = str(settings.OUTPUT_DIR / f"task_{task_id}_refined.glb")
+
+        result = run_refine(
+            state_path=state_path,
+            params={**params, "refine_preset": refine_preset},
+            progress=progress,
+            output_path=glb_path,
+            gpu_id=gpu_id,
+            cancel_event=cancel_event,
+        )
+
+        if cancel_event.is_set():
+            raise CancelledError("Task cancelled")
+
+        with Session() as db:
+            t = db.execute(
+                select(Task).where(Task.id == task_id)
+            ).scalar_one_or_none()
+            if t:
+                t.output_glb_path_refined = os.path.basename(glb_path)
+                t.refine_status = "completed"
+                t.status = "completed"
+                t.progress = "Refine complete"
+                t.subtask_index = SUBTASK_REFINE_TOTAL
+                t.overall_progress = 100
+                t.completed_at = datetime.now(timezone.utc)
+                t.refine_report = {
+                    "validation": result.get("validation", {}),
+                    "warnings": result.get("warnings", []),
+                    "alpha_mode": result.get("alpha_mode", "OPAQUE"),
+                    "preset": refine_preset,
+                }
+                db.commit()
+            # Also mirror the refined output onto the parent so the parent's
+            # detail view can show before/after without an extra query.
+            if parent_id is not None:
+                p = db.execute(
+                    select(Task).where(Task.id == parent_id)
+                ).scalar_one_or_none()
+                if p:
+                    p.output_glb_path_refined = os.path.basename(glb_path)
+                    p.refine_status = "completed"
+                    p.refine_preset = refine_preset
+                    p.refine_report = t.refine_report if t else {
+                        "preset": refine_preset,
+                    }
+                    db.commit()
+        print(f"[Worker GPU {gpu_id}] Refine task {task_id} completed -> {glb_path}",
+              flush=True)
+
+    except CancelledError:
+        print(f"[Worker GPU {gpu_id}] Refine task {task_id} cancelled.", flush=True)
+        try:
+            glb_path = settings.OUTPUT_DIR / f"task_{task_id}_refined.glb"
+            if glb_path.exists():
+                os.remove(glb_path)
+        except Exception:
+            pass
+        with Session() as db:
+            db.execute(update(Task).where(Task.id == task_id).values(
+                status="cancelled",
+                refine_status="cancelled",
+                progress="Cancelled",
+                completed_at=datetime.now(timezone.utc),
+            ))
+            db.commit()
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        with Session() as db:
+            db.execute(update(Task).where(Task.id == task_id).values(
+                status="failed",
+                refine_status="failed",
+                error_message=str(e),
+                progress="Refine failed",
+                completed_at=datetime.now(timezone.utc),
+            ))
+            db.commit()

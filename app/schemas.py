@@ -67,6 +67,12 @@ class TaskResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
+    # Refine pass
+    parent_task_id: Optional[int] = None
+    refine_preset: str = ""
+    output_glb_path_refined: str = ""
+    refine_status: str = ""
+    refine_report: Any = {}
 
     class Config:
         from_attributes = True

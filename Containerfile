@@ -21,6 +21,11 @@ RUN apt-get update && apt-get install -y \
     libxrender-dev \
     libopenexr-dev \
     libjpeg-dev \
+    curl \
+    libopengl0 \
+    libglu1-mesa \
+    libegl1 \
+    libgles2 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
@@ -45,7 +50,13 @@ RUN pip install \
     "opencv-python-headless==4.12.0.88" "ninja" "trimesh==4.10.1" \
     "transformers==4.57.3" "zstandard==0.25.0" "kornia==0.8.2" "timm==1.0.22" \
     "diffusers==0.37.1" "accelerate==1.13.0" "plyfile==1.1.3" "pillow==12.0.0" \
-    einops safetensors sentencepiece scipy scikit-learn
+    einops safetensors sentencepiece scipy scikit-learn \
+    fast_simplification xatlas pymeshlab
+
+# gltfpack (meshoptimizer) — Draco + KTX2 + meshopt GLB compression for the
+# refine post-process pipeline. Single static binary from upstream releases.
+RUN python -c "import urllib.request; urllib.request.urlretrieve('https://github.com/zeux/meshoptimizer/releases/latest/download/gltfpack-linux', '/usr/local/bin/gltfpack')" && \
+    chmod +x /usr/local/bin/gltfpack
 
 # ---- Build GPU packages from source (compatible with Blackwell) ----
 # Set CUDA arch for PyTorch C++ extensions (no GPU at build time, must specify)
@@ -89,6 +100,26 @@ RUN pip install --force-reinstall --no-deps \
 # Install our web app dependencies
 COPY requirements.txt .
 RUN pip install -r requirements.txt
+
+# Instant Meshes — automatic quad retopology tool (CLI binary)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git cmake build-essential libxrandr-dev libxinerama-dev \
+        libxcursor-dev libxi-dev libxxf86vm-dev libgl-dev && \
+    cd /tmp && git clone --recursive https://github.com/wjakob/instant-meshes.git && \
+    cd instant-meshes && \
+    sed -i 's/cmake_minimum_required(VERSION 2.8.8)/cmake_minimum_required(VERSION 3.5)/' CMakeLists.txt && \
+    sed -i 's/cmake_minimum_required(VERSION 2.8.11.2)/cmake_minimum_required(VERSION 3.5)/' ext/nanogui/ext/glfw/CMakeLists.txt && \
+    sed -i '/cmake_policy(SET CMP0042 OLD)/d' ext/nanogui/ext/glfw/CMakeLists.txt && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-changes-meaning" \
+             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+             -DGLFW_BUILD_DOCS=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_EXAMPLES=OFF && \
+    make -j$(nproc) && \
+    cp "Instant Meshes" /usr/local/bin/instant-meshes && chmod +x /usr/local/bin/instant-meshes && \
+    cd /tmp && rm -rf instant-meshes && \
+    apt-get purge -y git cmake build-essential libxrandr-dev libxinerama-dev \
+        libxcursor-dev libxi-dev libxxf86vm-dev libgl-dev && \
+    apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 # Copy Pixal3D assets (HDRI maps, sample images)
 RUN cp -r /opt/pixal3d/assets /app/assets || true

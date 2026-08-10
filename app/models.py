@@ -57,6 +57,17 @@ class Task(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
+    # ---- Refine pass ----
+    # If set, this task is a refine pass re-running GLB extraction from the
+    # parent's saved latent (state_path), not a fresh generation.
+    parent_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
+    refine_preset = Column(String(64), default="")
+    # Output of the refine pass (separate from output_glb_path which holds the
+    # original generation's GLB for the parent task).
+    output_glb_path_refined = Column(String(512), default="")
+    refine_status = Column(String(32), default="")  # idle|queued|processing|completed|failed
+    refine_report = Column(JSON, default=dict)       # validation + warnings
+
     user = relationship("User", back_populates="tasks")
 
 

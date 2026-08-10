@@ -1546,3 +1546,184 @@ model-viewer {
     border-radius: 3px;
 }
 
+
+/* ===== Refine Modal ===== */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(11, 15, 26, 0.85);
+    z-index: 1100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(8px);
+}
+
+.modal-card {
+    background: var(--bg-card, var(--bg, #151a2c));
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    width: 100%;
+    max-width: 520px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.modal-close-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.3rem;
+    border-radius: 4px;
+}
+
+.modal-close-btn:hover {
+    color: var(--text);
+    background: var(--border);
+}
+
+.modal-body {
+    padding: 1rem 1.25rem;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.modal-desc {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+    margin: 0 0 1rem 0;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem;
+    border-top: 1px solid var(--border);
+}
+
+.refine-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-bottom: 0.75rem;
+}
+
+.refine-field label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.refine-field select {
+    padding: 0.4rem 0.5rem;
+    background: var(--bg, #151a2c);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.82rem;
+}
+
+.refine-params {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem 0.8rem;
+}
+
+.refine-param {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.refine-param label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 600;
+}
+
+.refine-param input,
+.refine-param select {
+    padding: 0.3rem 0.4rem;
+    background: var(--bg, #151a2c);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text);
+    font-size: 0.78rem;
+}
+
+/* ===== Before/After compare (in detail view) ===== */
+.before-after {
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.5rem;
+}
+
+.before-after .compare-panel {
+    flex: 1;
+    min-width: 0;
+}
+
+.before-after-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--primary);
+    margin-bottom: 0.3rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.refine-report {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    background: var(--bg, #151a2c);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+}
+
+.refine-report-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.2rem 0.8rem;
+    font-family: monospace;
+}
+
+.refine-report-grid .k {
+    color: var(--text-dim);
+}
+
+.refine-report-grid .v {
+    color: var(--text);
+}
+
+.refine-warnings {
+    margin-top: 0.5rem;
+    color: #f0ad4e;
+    font-size: 0.72rem;
+}
+
+.refine-warnings div {
+    margin-bottom: 0.15rem;
+}

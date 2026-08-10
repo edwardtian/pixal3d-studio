@@ -1190,7 +1190,7 @@ async function loadTaskHistory() {
         list.innerHTML = barHtml + tasks.map(task => {
             const statusBadge = `<span class="status-badge status-${task.status}">${tStatus(task.status)}</span>`;
             const userLabel = currentUser.role === 'admin' ? ` (${task.username || '?'} #${task.user_id})` : '';
-            const canSelect = task.status === 'completed' && task.output_glb_path;
+            const canSelect = task.status === 'completed' && (task.output_glb_path || task.output_glb_path_refined);
             const isSelected = selectedTaskIds.has(task.id);
             const ratingHtml = task.rating > 0 ? `<span style="color:#fbbf24;">${'★'.repeat(task.rating)}${'☆'.repeat(5-task.rating)}</span>` : '';
             return `
@@ -1198,9 +1198,10 @@ async function loadTaskHistory() {
                 <input type="checkbox" class="task-select" ${canSelect ? '' : 'disabled'} ${isSelected ? 'checked' : ''} onchange="toggleSelectTask(${task.id}, this.checked)" onclick="event.stopPropagation()">
                 <img class="task-thumb" src="${authUrl('/api/tasks/' + task.id + '/image')}" alt="" onerror="this.style.display='none'" onclick="loadTaskDetail(${task.id})" style="cursor:pointer;">
                 <div class="task-info" onclick="loadTaskDetail(${task.id})" style="cursor:pointer;">
-                    <h4>Task #${task.id}${userLabel}</h4>
+                    <h4>Task #${task.id}${task.parent_task_id ? ` <span class="status-badge status-completed" style="font-size:0.6rem;">${t('refine.refined')}</span>` : ''}${userLabel}</h4>
                     <div class="task-meta">
                         ${statusBadge}
+                        ${task.refine_status === 'completed' && !task.parent_task_id ? `<span style="font-size:0.65rem;color:var(--primary);">⚡${t('refine.refined')}</span>` : ''}
                         ${ratingHtml}
                         <span>${new Date(task.created_at).toLocaleString()}</span>
                         <span>${t('history.res')}: ${task.parameters?.resolution || '-'}</span>
@@ -1259,7 +1260,7 @@ async function loadCompareView() {
     for (const id of selectedTaskIds) {
         try {
             const task = await apiFetch(`/tasks/${id}`);
-            if (task.status === 'completed' && task.output_glb_path) {
+            if (task.status === 'completed' && (task.output_glb_path || task.output_glb_path_refined)) {
                 compareTasks.push(task);
             }
         } catch (e) { /* skip */ }
@@ -1308,12 +1309,16 @@ function renderCompareContent(content) {
     // Model viewers
     html += `<div id="compare-models" class="${compareLayout === 'horizontal' ? 'compare-horizontal-list' : ''}">`;
     compareTasks.forEach((task, idx) => {
-        const glbUrl = authUrl('/api/tasks/' + task.id + '/download');
+        // Refine-child tasks have output_glb_path_refined instead of output_glb_path.
+        const glbUrl = task.output_glb_path
+            ? authUrl('/api/tasks/' + task.id + '/download')
+            : authUrl('/api/tasks/' + task.id + '/download/refined');
+        const refineBadge = task.parent_task_id ? ` <span class="status-badge status-completed" style="font-size:0.6rem;">${t('refine.refined')}</span>` : '';
         html += `
         <div class="compare-item">
             <div class="compare-item-header">
                 <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
-                    <h4>Task #${task.id}</h4>
+                    <h4>Task #${task.id}${refineBadge}</h4>
                     ${renderStarRating(task.id, task.rating || 0)}
                     <button class="btn btn-outline btn-sm" onclick="copyParamsFromTask(compareTasks[${idx}].parameters)" style="padding:0.2rem 0.5rem;font-size:0.72rem;">${t('detail.copy_params')}</button>
                 </div>
@@ -1433,6 +1438,216 @@ function setupCompareSync() {
 }
 
 // ===== Task Detail =====
+// ===== Refine =====
+let refineModalTaskId = null;
+let refineParamDefs = null;
+let refinePresets = null;
+let refineCurrentPreset = null;
+
+async function openRefineModal(taskId) {
+    refineModalTaskId = taskId;
+    const modal = document.getElementById('refine-modal');
+    document.getElementById('refine-modal-title').textContent = t('refine.title');
+    document.getElementById('refine-modal-desc').textContent = t('refine.description');
+    document.getElementById('refine-preset-label').textContent = t('refine.preset');
+    document.getElementById('refine-cancel-btn').textContent = t('refine.cancel');
+    document.getElementById('refine-start-btn').textContent = t('refine.start');
+
+    // Fetch refine parameter definitions + presets (cached).
+    try {
+        if (!refineParamDefs) {
+            const data = await apiFetch('/parameters/refine');
+            refineParamDefs = data.parameters;
+            refinePresets = data.presets;
+        }
+    } catch (e) {
+        showToast(t('msg.update_failed') + e.message);
+        return;
+    }
+
+    // Populate preset selector.
+    const sel = document.getElementById('refine-preset-select');
+    sel.innerHTML = '';
+    for (const [key, p] of Object.entries(refinePresets)) {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = p.label;
+        sel.appendChild(opt);
+    }
+    sel.value = 'game_engine';
+    refineCurrentPreset = 'game_engine';
+    onRefinePresetChange();
+    modal.style.display = 'flex';
+}
+
+function closeRefineModal() {
+    document.getElementById('refine-modal').style.display = 'none';
+    refineModalTaskId = null;
+}
+
+function onRefinePresetChange() {
+    const sel = document.getElementById('refine-preset-select');
+    refineCurrentPreset = sel.value;
+    const presetParams = refinePresets[refineCurrentPreset].params;
+    const container = document.getElementById('refine-params-container');
+    container.innerHTML = '';
+
+    // Render the user-tunable params (skip the preset selector itself).
+    const renderKeys = [
+        'decimation_target', 'texture_size', 'refine_smoothing',
+        'refine_remesh', 'refine_watertight', 'refine_uv_packer',
+        'refine_bake_normal', 'refine_bake_ao', 'refine_ao_samples',
+        'refine_inpaint', 'refine_compression', 'refine_draco_quality',
+        'refine_ktx2',
+    ];
+    for (const key of renderKeys) {
+        const def = refineParamDefs[key];
+        if (!def) continue;
+        const val = presetParams[key] !== undefined ? presetParams[key] : def.default;
+        const div = document.createElement('div');
+        div.className = 'refine-param';
+        div.title = def.tooltip || '';
+        const lbl = document.createElement('label');
+        lbl.textContent = def.label;
+        div.appendChild(lbl);
+
+        if (def.type === 'bool') {
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = !!val;
+            input.id = 'refine-param-' + key;
+            input.className = 'refine-checkbox';
+            div.appendChild(input);
+        } else if (def.type === 'select') {
+            const input = document.createElement('select');
+            input.id = 'refine-param-' + key;
+            input.className = 'refine-select';
+            for (const opt of def.options) {
+                const o = document.createElement('option');
+                o.value = opt.value;
+                o.textContent = opt.label;
+                input.appendChild(o);
+            }
+            input.value = String(val);
+            div.appendChild(input);
+        } else {
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.id = 'refine-param-' + key;
+            input.className = 'refine-number';
+            input.value = val;
+            if (def.min !== undefined) input.min = def.min;
+            if (def.max !== undefined) input.max = def.max;
+            if (def.step !== undefined) input.step = def.step;
+            div.appendChild(input);
+        }
+        container.appendChild(div);
+    }
+}
+
+function collectRefineParams() {
+    const presetParams = refinePresets[refineCurrentPreset].params;
+    const out = { refine_preset: refineCurrentPreset };
+    const keys = [
+        'decimation_target', 'texture_size', 'refine_smoothing',
+        'refine_remesh', 'refine_watertight', 'refine_uv_packer',
+        'refine_bake_normal', 'refine_bake_ao', 'refine_ao_samples',
+        'refine_inpaint', 'refine_compression', 'refine_draco_quality',
+        'refine_ktx2',
+    ];
+    for (const key of keys) {
+        const def = refineParamDefs[key];
+        if (!def) continue;
+        const el = document.getElementById('refine-param-' + key);
+        if (!el) {
+            out[key] = presetParams[key];
+            continue;
+        }
+        let val;
+        if (def.type === 'bool') {
+            val = el.checked;
+        } else if (def.type === 'int') {
+            val = parseInt(el.value, 10);
+            if (isNaN(val)) val = presetParams[key];
+        } else if (def.type === 'float') {
+            val = parseFloat(el.value);
+            if (isNaN(val)) val = presetParams[key];
+        } else {
+            val = el.value;
+        }
+        out[key] = val;
+    }
+    return out;
+}
+
+async function submitRefine() {
+    if (!refineModalTaskId) return;
+    const taskId = refineModalTaskId;
+    const params = collectRefineParams();
+    closeRefineModal();
+    try {
+        const formData = new FormData();
+        formData.append('preset', params.refine_preset || 'game_engine');
+        const { refine_preset, ...rest } = params;
+        formData.append('parameters', JSON.stringify(rest));
+        const data = await apiFetch(`/tasks/${taskId}/refine`, { method: 'POST', body: formData });
+        showToast(t('refine.started'));
+        // Show progress overlay + poll the new refine task.
+        showProgress();
+        document.getElementById('progress-stage').textContent = t('refine.queued');
+        startProgressPolling(data.id);
+    } catch (err) {
+        hideProgress();
+        const msg = err.message || '';
+        if (msg.includes('already')) showToast(t('refine.already_running'));
+        else if (msg.includes('must be completed')) showToast(t('refine.parent_required'));
+        else if (msg.includes('latent state')) showToast(t('refine.state_missing'));
+        else showToast(t('refine.failed') + msg);
+    }
+}
+
+function renderBeforeAfter(originalUrl, refinedUrl, originalLabel, refinedLabel,
+                            refinedDownloadUrl, report) {
+    let html = '<div class="before-after">';
+    // Original
+    html += `<div class="compare-panel">
+        <div class="before-after-label">${originalLabel}</div>
+        <div class="viewer-wrapper" data-compare-mv-wrap>
+            <model-viewer src="${originalUrl}" camera-controls auto-rotate shadow-intensity="1.5" environment-image="neutral" exposure="1.2" data-compare-mv></model-viewer>
+        </div>
+    </div>`;
+    // Refined
+    html += `<div class="compare-panel">
+        <div class="before-after-label">${refinedLabel}</div>
+        <div class="viewer-wrapper" data-compare-mv-wrap>
+            <model-viewer src="${refinedUrl}" camera-controls auto-rotate shadow-intensity="1.5" environment-image="neutral" exposure="1.2" data-compare-mv></model-viewer>
+        </div>
+        ${refinedDownloadUrl ? `<div style="margin-top:0.4rem;">
+            <a href="${refinedDownloadUrl}" download class="btn btn-primary btn-sm">${t('refine.download_refined')}</a>
+        </div>` : ''}
+    </div>`;
+    html += '</div>';
+
+    if (report && (report.validation || report.warnings)) {
+        html += '<div class="refine-report">';
+        html += `<div style="font-weight:700;margin-bottom:0.4rem;color:var(--text);">${t('refine.report')}</div>`;
+        if (report.validation) {
+            html += '<div class="refine-report-grid">';
+            for (const [k, v] of Object.entries(report.validation)) {
+                html += `<span class="k">${k}</span><span class="v">${v}</span>`;
+            }
+            html += '</div>';
+        }
+        if (report.warnings && report.warnings.length) {
+            html += `<div class="refine-warnings"><div style="font-weight:700;margin-bottom:0.2rem;">${t('refine.warnings')}</div>`;
+            for (const w of report.warnings) html += `<div>- ${w}</div>`;
+            html += '</div>';
+        }
+        html += '</div>';
+    }
+    return html;
+}
+
 async function loadTaskDetail(taskId) {
     try {
         const task = await apiFetch(`/tasks/${taskId}`);
@@ -1447,48 +1662,93 @@ async function loadTaskDetail(taskId) {
         // Main: 3D Result
         html += '<div class="detail-section">';
         html += `<h3>${t('detail.result')}</h3>`;
-        if (task.status === 'completed' && task.output_glb_path) {
-            const imgUrl = authUrl('/api/tasks/' + taskId + '/image');
-            const glbUrl = authUrl('/api/tasks/' + taskId + '/download');
-            html += `
-                <div class="compare-layout">
-                    <div class="compare-panel">
-                        <div class="compare-label">${t('detail.source_image')}</div>
-                        <div class="zoom-img-container" id="source-img-zoom" style="flex:1;min-height:300px;max-height:500px;">
-                            <img src="${imgUrl}" alt="Source">
-                        </div>
+        if (task.status === 'completed' && (task.output_glb_path || task.output_glb_path_refined)) {
+            const isRefineChild = !!task.parent_task_id;
+            const hasRefined = !!task.output_glb_path_refined;
+
+            // Resolve original + refined GLB URLs.
+            let originalUrl, refinedUrl;
+            if (isRefineChild) {
+                originalUrl = authUrl('/api/tasks/' + task.parent_task_id + '/download');
+                refinedUrl = authUrl('/api/tasks/' + taskId + '/download/refined');
+            } else {
+                originalUrl = authUrl('/api/tasks/' + taskId + '/download');
+                refinedUrl = hasRefined ? authUrl('/api/tasks/' + taskId + '/download/refined') : null;
+            }
+
+            // Primary download button points at the most relevant GLB:
+            // for a refine child -> refined; for a parent with no refine -> original.
+            const primaryDownloadUrl = isRefineChild ? refinedUrl : originalUrl;
+            const primaryDownloadLabel = isRefineChild ? t('refine.download_refined') : t('detail.download_glb');
+
+            html += `<div class="compare-layout">`;
+            if (hasRefined) {
+                // Before/after compare view.
+                html += `<div class="compare-panel" style="flex-direction:column;">
+                    <div class="compare-label">${t('detail.source_image')}</div>
+                    <div class="zoom-img-container" id="source-img-zoom" style="flex:1;min-height:200px;max-height:360px;">
+                        <img src="${authUrl('/api/tasks/' + taskId + '/image')}" alt="Source">
                     </div>
-                    <div class="compare-panel">
-                        <div class="compare-label">${t('detail.3d_model')}</div>
-                        <div class="viewer-wrapper" id="viewer-wrapper">
-                            <model-viewer src="${glbUrl}" camera-controls auto-rotate shadow-intensity="1.5" environment-image="neutral" exposure="1.2"></model-viewer>
-                        </div>
+                </div>`;
+                html += `<div class="compare-panel" style="flex-direction:column;">
+                    <div class="compare-label">${t('refine.compare_label')}</div>
+                    ${renderBeforeAfter(
+                        originalUrl, refinedUrl,
+                        t('refine.original'), t('refine.refined'),
+                        refinedUrl, task.refine_report,
+                    )}
+                </div>`;
+            } else {
+                // No refined mesh yet — show source image + original model.
+                html += `<div class="compare-panel">
+                    <div class="compare-label">${t('detail.source_image')}</div>
+                    <div class="zoom-img-container" id="source-img-zoom" style="flex:1;min-height:300px;max-height:500px;">
+                        <img src="${authUrl('/api/tasks/' + taskId + '/image')}" alt="Source">
                     </div>
-                </div>
-                <div class="viewer-toolbar">
-                    <a href="${glbUrl}" download class="btn btn-primary btn-sm">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                        ${t('detail.download_glb')}
-                    </a>
-                    <button class="btn btn-outline btn-sm" onclick="copyParamsFromTask(currentDetailParams)">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                        ${t('detail.copy_params')}
-                    </button>
-                    <button class="btn btn-outline btn-sm" onclick="resubmitTask(${taskId})">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-                        ${t('detail.resubmit')}
-                    </button>
-                    <button class="btn btn-outline btn-sm" onclick="toggleFullscreen()">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-                        <span id="fs-btn-label">${t('detail.fullscreen')}</span>
-                    </button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button>
-                </div>
-                <div style="margin-top:0.75rem;display:flex;align-items:center;gap:0.5rem;">
-                    <span style="font-size:0.8rem;color:var(--text-dim);">${t('detail.rate')}:</span>
-                    ${renderStarRating(taskId, task.rating || 0)}
-                </div>
-            `;
+                </div>`;
+                html += `<div class="compare-panel">
+                    <div class="compare-label">${t('detail.3d_model')}</div>
+                    <div class="viewer-wrapper" id="viewer-wrapper">
+                        <model-viewer src="${originalUrl}" camera-controls auto-rotate shadow-intensity="1.5" environment-image="neutral" exposure="1.2"></model-viewer>
+                    </div>
+                </div>`;
+            }
+            html += `</div>`; // .compare-layout
+
+            // Toolbar
+            html += `<div class="viewer-toolbar">`;
+            html += `<a href="${primaryDownloadUrl}" download class="btn btn-primary btn-sm">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                ${primaryDownloadLabel}
+            </a>`;
+            // Refine button — only on parent (non-refine) completed tasks.
+            if (!isRefineChild) {
+                html += `<button class="btn btn-outline btn-sm" onclick="openRefineModal(${taskId})">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                    ${t('refine.title')}
+                </button>`;
+            }
+            html += `<button class="btn btn-outline btn-sm" onclick="copyParamsFromTask(currentDetailParams)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                ${t('detail.copy_params')}
+            </button>`;
+            if (!isRefineChild) {
+                html += `<button class="btn btn-outline btn-sm" onclick="resubmitTask(${taskId})">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                    ${t('detail.resubmit')}
+                </button>`;
+                html += `<button class="btn btn-outline btn-sm" onclick="toggleFullscreen()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                    <span id="fs-btn-label">${t('detail.fullscreen')}</span>
+                </button>`;
+            }
+            html += `<button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button>`;
+            html += `</div>`; // .viewer-toolbar
+
+            html += `<div style="margin-top:0.75rem;display:flex;align-items:center;gap:0.5rem;">
+                <span style="font-size:0.8rem;color:var(--text-dim);">${t('detail.rate')}:</span>
+                ${renderStarRating(taskId, task.rating || 0)}
+            </div>`;
         } else if (task.status === 'failed') {
             html += `<div class="empty-state" style="padding:2rem;"><p style="color:var(--danger)">${t('detail.task_failed')}${task.error_message}</p></div>`;
             html += `<div style="margin-top:1rem;"><button class="btn btn-danger btn-sm" onclick="deleteTask(${taskId})">${t('detail.delete')}</button></div>`;
@@ -1541,8 +1801,13 @@ async function loadTaskDetail(taskId) {
         content.innerHTML = html;
 
         // Setup image zoom if completed
-        if (task.status === 'completed' && task.output_glb_path) {
+        if (task.status === 'completed' && (task.output_glb_path || task.output_glb_path_refined)) {
             setTimeout(() => setupImageZoom('source-img-zoom'), 100);
+            // Sync cameras across the before/after model-viewers, if present.
+            const baContainer = content.querySelector('.before-after');
+            if (baContainer) {
+                setTimeout(() => setupCompareSyncInContainer(baContainer), 200);
+            }
         }
 
         if (task.status === 'processing' || task.status === 'queued') {

@@ -292,6 +292,28 @@
     </div>
 </div>
 
+<!-- Refine Modal -->
+<div class="modal-overlay" id="refine-modal" style="display:none;">
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3 id="refine-modal-title">Refine Mesh</h3>
+            <button class="modal-close-btn" onclick="closeRefineModal()" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p class="modal-desc" id="refine-modal-desc"></p>
+            <div class="refine-field">
+                <label for="refine-preset-select" id="refine-preset-label">Preset</label>
+                <select id="refine-preset-select" onchange="onRefinePresetChange()"></select>
+            </div>
+            <div id="refine-params-container" class="refine-params"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline btn-sm" onclick="closeRefineModal()" id="refine-cancel-btn">Cancel</button>
+            <button class="btn btn-primary btn-sm" onclick="submitRefine()" id="refine-start-btn">Start Refine</button>
+        </div>
+    </div>
+</div>
+
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 

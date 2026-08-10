@@ -58,6 +58,28 @@ IMAGE_COND_CONFIGS = {
 CASCADE_MAX_NUM_TOKENS = 49152
 
 
+def _safe_simplify(mesh, target, timeout_sec=120):
+    """Run CuMesh simplify with a thread-based timeout. Falls back to CPU
+    trimesh decimation if CuMesh hangs (common on Blackwell GPUs)."""
+    result = {"error": None, "done": False}
+
+    def _do():
+        try:
+            mesh.simplify(target, verbose=True)
+            result["done"] = True
+        except Exception as e:
+            result["error"] = e
+
+    t = threading.Thread(target=_do, daemon=True)
+    t.start()
+    t.join(timeout=timeout_sec)
+
+    if not result["done"]:
+        if result["error"]:
+            raise result["error"]
+        raise TimeoutError(f"CuMesh simplify(target={target}) timed out after {timeout_sec}s")
+
+
 def _import_cls(module_path: str, cls_name: str):
     import importlib
     mod = importlib.import_module(module_path)
@@ -337,7 +359,7 @@ def generate_3d(
 
     # ---- Sub-task 5: Rendering preview views ----
     progress.update_subtask(5, "Rendering preview views", 0, 1)
-    mesh.simplify(16777216)
+    _safe_simplify(mesh, 16777216, timeout_sec=60)
     cam_dist = camera_params['distance']
     near = max(0.01, cam_dist - 2.0)
     far = cam_dist + 10.0
@@ -454,7 +476,7 @@ def extract_glb(
     _glb_progress(4)
 
     print("[GLB] Step 4: simplify (3x target)...", flush=True)
-    mesh.simplify(decimation_target * 3, verbose=True)
+    _safe_simplify(mesh, decimation_target * 3)
     print(f"[GLB]   -> {mesh.num_vertices} verts, {mesh.num_faces} faces", flush=True)
     _glb_progress(5)
 
@@ -467,7 +489,7 @@ def extract_glb(
     _glb_progress(6)
 
     print("[GLB] Step 6: simplify (target)...", flush=True)
-    mesh.simplify(decimation_target, verbose=True)
+    _safe_simplify(mesh, decimation_target)
     print(f"[GLB]   -> {mesh.num_vertices} verts, {mesh.num_faces} faces", flush=True)
     _glb_progress(7)
 
@@ -516,13 +538,23 @@ def extract_glb(
     orig_tri_verts = v2[f2[face_id.long()]]
     valid_pos = (orig_tri_verts * uvw.unsqueeze(-1)).sum(dim=1)
     attrs = torch.zeros(texture_size, texture_size, mesh_decode.attrs.shape[1], device='cuda')
-    attrs[mask] = grid_sample_3d(
+    sampled = grid_sample_3d(
         mesh_decode.attrs,
         torch.cat([torch.zeros_like(mesh_decode.coords[:, :1]), mesh_decode.coords], dim=-1),
         shape=torch.Size([1, mesh_decode.attrs.shape[1], res, res, res]),
         grid=((valid_pos - aabb_t[0]) / voxel_size).reshape(1, -1, 3),
         mode='trilinear',
     )
+    M = valid_pos.shape[0]
+    C = mesh_decode.attrs.shape[1]
+    if sampled.shape != (M, C):
+        if sampled.numel() == M * C:
+            sampled = sampled.reshape(M, C)
+        elif sampled.dim() == 3 and sampled.shape[0] == texture_size and sampled.shape[1] == texture_size:
+            sampled = sampled[mask]
+        else:
+            sampled = sampled.reshape(M, C)
+    attrs[mask] = sampled
     print("[GLB]   texture baked", flush=True)
     _glb_progress(10)
 

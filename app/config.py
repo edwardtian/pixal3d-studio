@@ -39,6 +39,9 @@ class Settings(BaseSettings):
 
     PORT: int = 8000
 
+    # Watchdog: kill worker if a task runs longer than this (minutes)
+    TASK_TIMEOUT_MINUTES: float = float(os.environ.get("TASK_TIMEOUT_MINUTES", "30"))
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

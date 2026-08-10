@@ -28,20 +28,42 @@ SUBTASK_TOTAL = len(SUBTASKS)
 SUBTASK_BY_INDEX = {s.index: s for s in SUBTASKS}
 
 
-def overall_progress(subtask_index: int, subtask_step: int, subtask_total_steps: int) -> int:
+# Refine pipeline sub-tasks. Used when a task is a refine pass (has a
+# parent_task_id). Weights sum to 1.0.
+SUBTASKS_REFINE: list[SubTask] = [
+    SubTask(1, "Repair High-Poly Source", 0.10),
+    SubTask(2, "Isotropic Remesh",        0.08),
+    SubTask(3, "Curvature Decimation",    0.10),
+    SubTask(4, "UV Optimize",             0.12),
+    SubTask(5, "Texture Bake (PBR+N+AO)", 0.25),
+    SubTask(6, "Texture Inpaint",         0.08),
+    SubTask(7, "PBR Finalize",            0.07),
+    SubTask(8, "Compress & Export",       0.15),
+    SubTask(9, "Validate",                0.05),
+]
+
+SUBTASK_REFINE_TOTAL = len(SUBTASKS_REFINE)
+SUBTASK_REFINE_BY_INDEX = {s.index: s for s in SUBTASKS_REFINE}
+
+
+def overall_progress(subtask_index: int, subtask_step: int, subtask_total_steps: int,
+                     refine: bool = False) -> int:
     """Compute overall 0-100 progress.
 
     `subtask_index` is 1-based. `subtask_step`/`subtask_total_steps` describe
     progress within the current sub-task (any non-positive total is treated as
-    "just started" = 0).
+    "just started" = 0). When ``refine`` is True, uses the refine sub-task
+    list (for tasks with a parent_task_id).
     """
+    subtasks = SUBTASKS_REFINE if refine else SUBTASKS
+    by_index = SUBTASK_REFINE_BY_INDEX if refine else SUBTASK_BY_INDEX
     if subtask_index <= 0:
         return 0
     completed_weight = 0.0
-    for s in SUBTASKS:
+    for s in subtasks:
         if s.index < subtask_index:
             completed_weight += s.weight
-    current = SUBTASK_BY_INDEX.get(subtask_index)
+    current = by_index.get(subtask_index)
     if current is None:
         return int(round(completed_weight * 100))
     frac = 0.0

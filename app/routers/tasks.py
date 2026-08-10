@@ -195,6 +195,50 @@ async def download_glb(
     return FileResponse(str(glb_path), media_type="model/gltf-binary", filename=f"pixal3d_task_{task_id}.glb")
 
 
+@router.get("/{task_id}/download/refined")
+async def download_refined_glb(
+    task_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download the refined GLB produced by a refine pass.
+
+    Works on either the refine task itself or its parent task: if the queried
+    task has no refined GLB but has a child refine task that does, serve that.
+    """
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalars().first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.user_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not your task")
+
+    refined_path = task.output_glb_path_refined
+    if not refined_path:
+        # Look for a child refine task that produced a refined GLB.
+        child_result = await db.execute(
+            select(Task).where(
+                Task.parent_task_id == task_id,
+                Task.refine_status == "completed",
+                Task.output_glb_path_refined != "",
+            ).order_by(Task.created_at.desc())
+        )
+        child = child_result.scalars().first()
+        if child is None:
+            raise HTTPException(status_code=400, detail="No refined GLB available")
+        refined_path = child.output_glb_path_refined
+        task_id = child.id
+
+    glb_path = settings.OUTPUT_DIR / refined_path
+    if not glb_path.exists():
+        raise HTTPException(status_code=404, detail="Refined GLB file not found")
+    return FileResponse(
+        str(glb_path),
+        media_type="model/gltf-binary",
+        filename=f"pixal3d_task_{task_id}_refined.glb",
+    )
+
+
 @router.get("/{task_id}/glb-url")
 async def get_glb_url(
     task_id: int,
@@ -237,6 +281,11 @@ async def delete_task(
         if glb_path.exists():
             os.remove(glb_path)
 
+    if task.output_glb_path_refined:
+        refined_path = settings.OUTPUT_DIR / task.output_glb_path_refined
+        if refined_path.exists():
+            os.remove(refined_path)
+
     render_dir = settings.RENDERS_DIR / f"task_{task_id}"
     if render_dir.exists():
         shutil.rmtree(render_dir)
@@ -270,6 +319,8 @@ async def cancel_task(
     if outcome == "queued":
         task.status = "cancelled"
         task.progress = "Cancelled"
+        if task.parent_task_id is not None:
+            task.refine_status = "cancelled"
         task.completed_at = datetime.now(timezone.utc)
         await db.commit()
         return {"detail": "Task cancelled", "immediate": True}
@@ -278,6 +329,68 @@ async def cancel_task(
         task.progress = "Cancelling..."
         await db.commit()
         return {"detail": "Cancel requested; task will stop at the next sub-task boundary", "immediate": False}
+
+
+@router.post("/{task_id}/refine", response_model=TaskResponse)
+async def refine_task(
+    task_id: int,
+    preset: str = Form("game_engine"),
+    parameters: str = Form("{}"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a refine task that re-runs GLB extraction (with the full
+    post-process pipeline) from the parent task's saved latent.
+
+    The new task is queued just like a generation task; the worker dispatches
+    on ``parent_task_id is not None``. The user can poll the new task's
+    status/progress and download the refined GLB once ``refine_status``
+    becomes ``completed``.
+    """
+    import json
+    from app.postprocess.config import validate_refine_parameters
+
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    parent = result.scalars().first()
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent task not found")
+    if parent.user_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not your task")
+
+    if parent.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Parent task must be completed before refining (current: {parent.status})",
+        )
+    if not parent.state_path or not os.path.exists(parent.state_path):
+        raise HTTPException(
+            status_code=400,
+            detail="Parent task's latent state is missing and cannot be refined.",
+        )
+
+    params = json.loads(parameters) if parameters else {}
+    refine_params = validate_refine_parameters(params, preset_key=preset)
+
+    # Create the refine task. It shares the parent's input image so it shows
+    # up in history with a thumbnail; parameters carry the refine knobs.
+    refine_task = Task(
+        user_id=user.id,
+        status="queued",
+        input_image_path=parent.input_image_path,
+        parameters=refine_params,
+        parent_task_id=parent.id,
+        refine_preset=preset,
+        refine_status="queued",
+        state_path=parent.state_path,
+        camera_angle_x=parent.camera_angle_x,
+        camera_distance=parent.camera_distance,
+    )
+    db.add(refine_task)
+    await db.commit()
+    await db.refresh(refine_task)
+
+    await task_queue.submit(refine_task.id, user.id)
+    return refine_task
 
 
 @router.post("/cleanup")
@@ -326,6 +439,13 @@ async def cleanup_tasks(
             if glb_path.exists():
                 try:
                     os.remove(glb_path)
+                except Exception:
+                    pass
+        if task.output_glb_path_refined:
+            refined_path = settings.OUTPUT_DIR / task.output_glb_path_refined
+            if refined_path.exists():
+                try:
+                    os.remove(refined_path)
                 except Exception:
                     pass
         render_dir = settings.RENDERS_DIR / f"task_{task.id}"
