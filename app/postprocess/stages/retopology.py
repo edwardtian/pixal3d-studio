@@ -100,14 +100,20 @@ def _run_cumesh_decimate(ctx, target):
         mesh.fill_holes(max_hole_perimeter=3e-2)
         mesh.unify_face_orientations()
 
-        if ctx.params.get("refine_watertight", True):
-            _try_make_watertight(mesh, ctx)
+        # Finalize on CPU: remove nested interior shells + guarantee
+        # watertightness (required for collision meshes).
+        v, f = mesh.read()
+        v_np = (v.cpu().numpy() if hasattr(v, "cpu") else np.asarray(v)).astype(np.float32)
+        f_np = (f.cpu().numpy() if hasattr(f, "cpu") else np.asarray(f)).astype(np.int32)
+        v_np, f_np = _finalize_lowpoly_trimesh(v_np, f_np, ctx)
+        mesh = cumesh.CuMesh()
+        mesh.init(vertices=torch.from_numpy(v_np).to("cuda"),
+                  faces=torch.from_numpy(f_np).to("cuda"))
 
         mesh.compute_vertex_normals()
-        v, f = mesh.read()
         n = mesh.read_vertex_normals()
-        ctx.lp_vertices = (v.cpu().numpy() if hasattr(v, "cpu") else np.asarray(v)).astype(np.float32)
-        ctx.lp_faces = (f.cpu().numpy() if hasattr(f, "cpu") else np.asarray(f)).astype(np.int32)
+        ctx.lp_vertices = v_np
+        ctx.lp_faces = f_np
         ctx.lp_normals = (n.cpu().numpy() if hasattr(n, "cpu") else np.asarray(n)).astype(np.float32)
         print(f"[Refine/Decimate] final: {len(ctx.lp_vertices)} verts, "
               f"{len(ctx.lp_faces)} faces", flush=True)
@@ -169,9 +175,16 @@ def _cpu_decimate(ctx, target):
 
     _cleanup_trimesh(tm)
 
+    # Finalize on CPU: remove nested interior shells + guarantee watertightness.
+    v, f = _finalize_lowpoly_trimesh(
+        np.asarray(tm.vertices, dtype=np.float32),
+        np.asarray(tm.faces, dtype=np.int32),
+        ctx,
+    )
+
     # Post-decimation edge flip optimization via pymeshlab — improves triangle
     # quality and aligns edges with curvature for better shading/normal-mapping
-    v, f = _edge_flip_optimize(tm.vertices, tm.faces)
+    v, f = _edge_flip_optimize(v, f)
     ctx.lp_vertices = v
     ctx.lp_faces = f
     ctx.lp_normals = _compute_vertex_normals(v, f)
@@ -232,25 +245,68 @@ def _cleanup_trimesh(tm):
     tm.fill_holes()
 
 
-def _try_make_watertight(mesh, ctx):
-    """Best-effort watertight pass. We check boundary edges via trimesh and
-    fill remaining holes; if it still has boundary edges we warn but continue
-    (some meshes — open cloth, terrain — are intentionally non-watertight)."""
-    try:
-        import trimesh
-        v, f = mesh.read()
-        v_np = (v.cpu().numpy() if hasattr(v, "cpu") else np.asarray(v)).astype(np.float32)
-        f_np = (f.cpu().numpy() if hasattr(f, "cpu") else np.asarray(f)).astype(np.int32)
-        tm = trimesh.Trimesh(vertices=v_np, faces=f_np, process=False)
-        if tm.is_watertight:
-            return
-        # Try filling any remaining holes via trimesh then push back.
+def _finalize_lowpoly_trimesh(v, f, ctx):
+    """Clean the decimated low-poly: remove nested interior shells, fill holes,
+    and attempt to guarantee watertightness (required for collision meshes).
+
+    Runs on the low-poly (already decimated) so it is cheap even when the
+    high-poly source is millions of faces.
+    """
+    import trimesh
+
+    tm = trimesh.Trimesh(vertices=v, faces=f, process=False)
+    _cleanup_trimesh(tm)
+    if ctx.params.get("refine_remove_interior", True):
+        tm = _remove_interior_components(tm, ctx)
+    if ctx.params.get("refine_watertight", True) and not tm.is_watertight:
         tm.fill_holes()
-        if tm.is_watertight:
-            import torch
-            mesh.init(vertices=torch.from_numpy(tm.vertices).to("cuda"),
-                      faces=torch.from_numpy(tm.faces).to("cuda"))
-            return
-        ctx.warn("mesh is not fully watertight after repair; exporting as-is")
+        if not tm.is_watertight:
+            ctx.warn("mesh is not fully watertight after repair; exporting as-is")
+    return (np.asarray(tm.vertices, dtype=np.float32),
+            np.asarray(tm.faces, dtype=np.int32))
+
+
+def _remove_interior_components(tm, ctx):
+    """Best-effort removal of nested interior shells from the low-poly.
+
+    Splits the mesh into connected components, then drops any watertight
+    component whose interior point is contained inside another (larger)
+    watertight component. Conservative: only fully-enclosed watertight shells
+    are removed, so open surfaces (cloth, terrain) are left untouched.
+    """
+    import trimesh
+
+    try:
+        comps = tm.split(only_watertight=False)
+        if len(comps) <= 1:
+            return tm
+        comps_sorted = sorted(comps, key=lambda c: c.area, reverse=True)
+        remove = set()
+        for i in range(1, len(comps_sorted)):
+            ci = comps_sorted[i]
+            if not ci.is_watertight:
+                continue
+            try:
+                pt = ci.centroid
+            except Exception:
+                continue
+            for j in range(i):
+                cj = comps_sorted[j]
+                if not cj.is_watertight:
+                    continue
+                try:
+                    if cj.contains([pt])[0]:
+                        remove.add(i)
+                        break
+                except Exception:
+                    continue
+        if not remove:
+            return tm
+        keep = [c for k, c in enumerate(comps_sorted) if k not in remove]
+        merged = trimesh.util.concatenate(keep)
+        print(f"[Refine/Decimate] removed {len(remove)} interior shell(s)",
+              flush=True)
+        return merged
     except Exception as e:
-        ctx.warn(f"watertight check failed: {e}")
+        ctx.warn(f"interior removal skipped ({e})")
+        return tm

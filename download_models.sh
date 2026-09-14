@@ -15,6 +15,7 @@ MODELS=(
     "Ruicheng/moge-2-vitl"
     "camenduru/dinov3-vitl16-pretrain-lvd1689m"
     "briaai/RMBG-2.0"
+    "VAST-AI/TripoSG"
 )
 
 for model in "${MODELS[@]}"; do

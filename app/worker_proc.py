@@ -3,17 +3,20 @@
 Each GPU gets its own worker process with CUDA_VISIBLE_DEVICES set to that GPU.
 This completely isolates CUDA contexts, avoiding the cross-device illegal memory
 access errors that occur when multiple threads share a single CUDA process.
+
+Generation is backend-driven (see app.backends): the worker activates the
+backend requested by the task, which lazily loads its models on first use and
+unloads the previously active backend so VRAM stays available for the next one.
 """
 
 import os
 import sys
-import time
 import threading
 import traceback
 from datetime import datetime, timezone
 
 
-def worker_entry(gpu_id: int, task_queue, busy, current_task_id, db_url: str):
+def worker_entry(gpu_id: int, task_queue, busy, current_task_id, loaded, db_url: str):
     """Main loop for a worker process.
 
     Args:
@@ -21,20 +24,18 @@ def worker_entry(gpu_id: int, task_queue, busy, current_task_id, db_url: str):
         task_queue: multiprocessing.Queue of task_ids (int). None = shutdown.
         busy: multiprocessing.Value('b') — set True while processing.
         current_task_id: multiprocessing.Value('i') — current task id or 0.
+        loaded: multiprocessing.Value('b') — True once any backend is loaded.
         db_url: SQLAlchemy DB URL (with +aiosqlite, will be stripped for sync).
     """
     # Set CUDA_VISIBLE_DEVICES BEFORE importing torch or any app modules.
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
 
     # Imports that touch torch must come after the env var is set.
-    from sqlalchemy import create_engine, select, update, text
+    from sqlalchemy import create_engine, update, text
     from sqlalchemy.orm import sessionmaker
 
-    from app.config import settings
+    from app.backends.registry import backend_registry as registry
     from app.models import Task
-    from app.parameters import validate_parameters
-    from app.pipeline import init_pipeline
-    from app.stages import SUBTASK_TOTAL, overall_progress
 
     # Create sync DB engine
     sync_db_url = db_url.replace('+aiosqlite', '')
@@ -46,20 +47,7 @@ def worker_entry(gpu_id: int, task_queue, busy, current_task_id, db_url: str):
         conn.execute(text('PRAGMA journal_mode=WAL'))
         conn.commit()
 
-    # Load pipeline (on cuda:0, which is the only visible GPU)
-    # Use a file lock so multiple worker processes don't race on torch.hub
-    # downloads / NAF extraction.
-    import fcntl
-    lock_path = '/tmp/pipeline_init.lock'
-    lock_file = open(lock_path, 'w')
-    fcntl.flock(lock_file, fcntl.LOCK_EX)
-    try:
-        print(f"[Worker GPU {gpu_id}] Loading pipeline...", flush=True)
-        init_pipeline()
-    finally:
-        fcntl.flock(lock_file, fcntl.LOCK_UN)
-        lock_file.close()
-    print(f"[Worker GPU {gpu_id}] Pipeline loaded, ready for tasks.", flush=True)
+    print(f"[Worker GPU {gpu_id}] Ready — backends load lazily on first task.", flush=True)
 
     while True:
         task_id = task_queue.get()  # blocks until a task is available
@@ -86,22 +74,26 @@ def worker_entry(gpu_id: int, task_queue, busy, current_task_id, db_url: str):
                     db.commit()
             except Exception:
                 pass
+        finally:
+            busy.value = False
+            current_task_id.value = 0
 
-        busy.value = False
-        current_task_id.value = 0
+        # Report backend-loaded state to the GPU admin view.
+        if registry.any_loaded():
+            loaded.value = True
 
     print(f"[Worker GPU {gpu_id}] Shutting down.", flush=True)
 
 
 def _process_task(task_id: int, gpu_id: int, Session):
     """Process a single task (sync, runs in worker process)."""
-    import shutil
     from sqlalchemy import select, update
-    from app.pipeline import preprocess_image, generate_3d, extract_glb, ProgressCallback, CancelledError
+    from app.backends.base import CancelledError, ProgressCallback
+    from app.backends.registry import backend_registry as registry
     from app.config import settings
     from app.models import Task
     from app.parameters import validate_parameters
-    from app.stages import SUBTASK_TOTAL, SUBTASK_REFINE_TOTAL, overall_progress
+    from app.stages import SUBTASK_REFINE_TOTAL, subtasks_for, overall_progress
 
     cancel_event = threading.Event()
     stop_monitor = threading.Event()
@@ -109,9 +101,9 @@ def _process_task(task_id: int, gpu_id: int, Session):
     # Progress monitor thread — writes progress to DB every 0.5s
     progress = ProgressCallback()
 
-    # Whether this task is a refine pass is determined later inside the try
-    # block; the monitor reads it via this shared holder.
-    state = {"is_refine": False}
+    # Whether this task is a refine pass / which backend it uses is determined
+    # inside the try block; the monitor reads them via this shared holder.
+    state = {"is_refine": False, "backend_id": "pixal3d", "subtask_total": 6}
 
     def progress_monitor():
         while not stop_monitor.is_set():
@@ -120,16 +112,16 @@ def _process_task(task_id: int, gpu_id: int, Session):
                     progress.subtask_index,
                     progress.subtask_step,
                     progress.subtask_total_steps,
+                    backend_id=state["backend_id"],
                     refine=state["is_refine"],
                 )
-                subtask_total = SUBTASK_REFINE_TOTAL if state["is_refine"] else SUBTASK_TOTAL
                 with Session() as db:
                     db.execute(update(Task).where(Task.id == task_id).values(
                         progress=progress.stage or progress.subtask_name,
                         progress_step=progress.step,
                         progress_total=progress.total,
                         subtask_index=progress.subtask_index,
-                        subtask_total=subtask_total,
+                        subtask_total=state["subtask_total"],
                         subtask_name=progress.subtask_name,
                         subtask_step=progress.subtask_step,
                         subtask_total_steps=progress.subtask_total_steps,
@@ -181,21 +173,29 @@ def _process_task(task_id: int, gpu_id: int, Session):
             is_refine = task.parent_task_id is not None
             state["is_refine"] = is_refine
 
+            params = None
+            backend_id = "pixal3d"
+            if not is_refine:
+                params = validate_parameters(task.parameters)
+                backend_id = params["backend"]
+                state["backend_id"] = backend_id
+                state["subtask_total"] = len(subtasks_for(backend_id))
+
             task.status = "processing"
             task.started_at = datetime.now(timezone.utc)
             task.assigned_gpu = gpu_id
             if is_refine:
                 task.subtask_total = SUBTASK_REFINE_TOTAL
+                state["subtask_total"] = SUBTASK_REFINE_TOTAL
                 task.refine_status = "processing"
             else:
-                task.subtask_total = SUBTASK_TOTAL
+                task.subtask_total = state["subtask_total"]
             task.subtask_index = 0
             task.subtask_name = "Initializing"
             task.progress = "Initializing..."
             task.overall_progress = 0
             db.commit()
 
-            params = validate_parameters(task.parameters)
             input_image_path = str(settings.UPLOAD_DIR / task.input_image_path)
 
         if is_refine:
@@ -206,27 +206,39 @@ def _process_task(task_id: int, gpu_id: int, Session):
         if cancel_event.is_set():
             raise CancelledError("Task cancelled")
 
-        # Preprocess
-        preprocessed_path = preprocess_image(input_image_path)
-
-        with Session() as db:
-            task = db.execute(
-                select(Task).where(Task.id == task_id)
-            ).scalar_one_or_none()
-            if task:
-                task.preprocessed_image_path = preprocessed_path
+        # ---- Activate the requested backend (lazy load on first use) ----
+        backend = registry.get(backend_id)
+        if not backend.is_loaded():
+            with Session() as db:
+                db.execute(update(Task).where(Task.id == task_id).values(
+                    progress=f"Loading {backend.DISPLAY_NAME} model...",
+                    subtask_index=0,
+                    subtask_name=f"Loading {backend.DISPLAY_NAME} model",
+                ))
                 db.commit()
+            print(f"[Worker GPU {gpu_id}] Loading backend '{backend_id}'...", flush=True)
+            registry.activate(backend_id)
+            print(f"[Worker GPU {gpu_id}] Backend '{backend_id}' loaded.", flush=True)
 
         if cancel_event.is_set():
             raise CancelledError("Task cancelled")
 
-        # Generate 3D
-        gen_result = generate_3d(
-            preprocessed_path, params, progress, task_renders_dir, cancel_event,
+        # ---- Run the backend pipeline (image -> GLB) ----
+        output_glb_path = str(settings.OUTPUT_DIR / f"task_{task_id}.glb")
+        result = backend.run(
+            input_image_path,
+            params,
+            progress,
+            task_renders_dir,
+            output_glb_path,
+            cancel_event,
         )
 
+        if cancel_event.is_set():
+            raise CancelledError("Task cancelled")
+
         render_paths_rel = {}
-        for mode, files in gen_result["render_paths"].items():
+        for mode, files in result.get("render_paths", {}).items():
             render_paths_rel[mode] = [os.path.basename(f) for f in files]
 
         with Session() as db:
@@ -235,36 +247,14 @@ def _process_task(task_id: int, gpu_id: int, Session):
             ).scalar_one_or_none()
             if task:
                 task.render_paths = render_paths_rel
-                task.state_path = gen_result["state_path"]
-                task.camera_angle_x = str(gen_result["camera_angle_x"])
-                task.camera_distance = str(gen_result["distance"])
-                task.progress = "Generation complete"
-                db.commit()
-
-        if cancel_event.is_set():
-            raise CancelledError("Task cancelled")
-
-        # Extract GLB
-        glb_path = str(settings.OUTPUT_DIR / f"task_{task_id}.glb")
-        extract_glb(
-            gen_result["state_path"],
-            params["decimation_target"],
-            params["texture_size"],
-            progress, glb_path, cancel_event,
-        )
-
-        if cancel_event.is_set():
-            raise CancelledError("Task cancelled")
-
-        with Session() as db:
-            task = db.execute(
-                select(Task).where(Task.id == task_id)
-            ).scalar_one_or_none()
-            if task:
-                task.output_glb_path = os.path.basename(glb_path)
+                task.state_path = result.get("state_path") or ""
+                task.preprocessed_image_path = result.get("preprocessed_image_path") or ""
+                task.camera_angle_x = str(result.get("camera_angle_x") or "")
+                task.camera_distance = str(result.get("distance") or "")
+                task.output_glb_path = os.path.basename(output_glb_path)
                 task.status = "completed"
                 task.progress = "Done"
-                task.subtask_index = SUBTASK_TOTAL
+                task.subtask_index = state["subtask_total"]
                 task.overall_progress = 100
                 task.completed_at = datetime.now(timezone.utc)
                 db.commit()
@@ -323,13 +313,14 @@ def _cleanup_cancelled(task_id: int, renders_dir: str):
 def _process_refine(task_id: int, gpu_id: int, Session, progress, cancel_event,
                     stop_monitor):
     """Run the post-process refine pipeline against a parent task's saved
-    latent. Skips generation stages 1–5; only runs the refine stages."""
+    latent. Skips generation stages 1-5; only runs the refine stages."""
     from sqlalchemy import select, update
+    from app.backends.base import CancelledError
+    from app.backends.registry import backend_registry as registry
     from app.config import settings
     from app.models import Task
     from app.postprocess import run_refine
-    from app.pipeline import CancelledError
-    from app.stages import SUBTASK_REFINE_TOTAL, overall_progress
+    from app.stages import SUBTASK_REFINE_TOTAL
 
     try:
         # Load the refine task + its parent (for the saved latent path).
@@ -353,6 +344,18 @@ def _process_refine(task_id: int, gpu_id: int, Session, progress, cancel_event,
             state_path = parent.state_path
             params = task.parameters or {}
             refine_preset = task.refine_preset or params.get("refine_preset", "game_engine")
+
+        # The refine pipeline needs the Pixal3D pipeline loaded (it decodes the
+        # parent's saved shape/texture latents).
+        backend = registry.get("pixal3d")
+        if not backend.is_loaded():
+            with Session() as db:
+                db.execute(update(Task).where(Task.id == task_id).values(
+                    progress="Loading Pixal3D model...",
+                ))
+                db.commit()
+            print(f"[Worker GPU {gpu_id}] Loading Pixal3D backend for refine...", flush=True)
+            registry.activate("pixal3d")
 
         print(f"[Worker GPU {gpu_id}] Refine task {task_id} (parent={parent_id}, "
               f"preset={refine_preset})", flush=True)
@@ -383,56 +386,30 @@ def _process_refine(task_id: int, gpu_id: int, Session, progress, cancel_event,
                 t.subtask_index = SUBTASK_REFINE_TOTAL
                 t.overall_progress = 100
                 t.completed_at = datetime.now(timezone.utc)
-                t.refine_report = {
-                    "validation": result.get("validation", {}),
-                    "warnings": result.get("warnings", []),
-                    "alpha_mode": result.get("alpha_mode", "OPAQUE"),
-                    "preset": refine_preset,
-                }
                 db.commit()
-            # Also mirror the refined output onto the parent so the parent's
-            # detail view can show before/after without an extra query.
-            if parent_id is not None:
-                p = db.execute(
-                    select(Task).where(Task.id == parent_id)
-                ).scalar_one_or_none()
-                if p:
-                    p.output_glb_path_refined = os.path.basename(glb_path)
-                    p.refine_status = "completed"
-                    p.refine_preset = refine_preset
-                    p.refine_report = t.refine_report if t else {
-                        "preset": refine_preset,
-                    }
-                    db.commit()
-        print(f"[Worker GPU {gpu_id}] Refine task {task_id} completed -> {glb_path}",
-              flush=True)
 
     except CancelledError:
-        print(f"[Worker GPU {gpu_id}] Refine task {task_id} cancelled.", flush=True)
-        try:
-            glb_path = settings.OUTPUT_DIR / f"task_{task_id}_refined.glb"
-            if glb_path.exists():
-                os.remove(glb_path)
-        except Exception:
-            pass
         with Session() as db:
-            db.execute(update(Task).where(Task.id == task_id).values(
-                status="cancelled",
-                refine_status="cancelled",
-                progress="Cancelled",
-                completed_at=datetime.now(timezone.utc),
-            ))
-            db.commit()
+            t = db.execute(
+                select(Task).where(Task.id == task_id)
+            ).scalar_one_or_none()
+            if t:
+                t.status = "cancelled"
+                t.refine_status = "cancelled"
+                t.progress = "Cancelled"
+                t.completed_at = datetime.now(timezone.utc)
+                db.commit()
 
     except Exception as e:
-        import traceback
         traceback.print_exc()
         with Session() as db:
-            db.execute(update(Task).where(Task.id == task_id).values(
-                status="failed",
-                refine_status="failed",
-                error_message=str(e),
-                progress="Refine failed",
-                completed_at=datetime.now(timezone.utc),
-            ))
-            db.commit()
+            t = db.execute(
+                select(Task).where(Task.id == task_id)
+            ).scalar_one_or_none()
+            if t:
+                t.status = "failed"
+                t.refine_status = "failed"
+                t.error_message = str(e)
+                t.progress = "Refine failed"
+                t.completed_at = datetime.now(timezone.utc)
+                db.commit()

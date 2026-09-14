@@ -2,6 +2,9 @@
 let authToken = null;
 let currentUser = null;
 let parameterDefs = {};
+let backendsList = [];
+let currentBackendId = null;
+const paramDefsCache = {};
 let selectedFile = null;
 let originalFile = null;
 let uploadedImageFilename = null;
@@ -22,7 +25,6 @@ let cropImg = null;
 
 // Compare state
 let selectedTaskIds = new Set();
-let compareSyncActive = false;
 let compareFsActive = false;
 let compareLayout = 'vertical';
 
@@ -113,7 +115,7 @@ function showMainApp() {
         document.getElementById('gpus-nav-btn').style.display = 'flex';
     }
 
-    loadParameters();
+    loadBackends();
     startQueuePolling();
     if (currentUser.role === 'admin') {
         document.getElementById('admin-filters').style.display = 'flex';
@@ -196,14 +198,82 @@ function navigateTo(view) {
     if (view === 'presets') loadPresetsView();
 }
 
-// ===== Parameters =====
-async function loadParameters() {
+// ===== Backends & Parameters =====
+async function loadBackends() {
     try {
-        parameterDefs = await apiFetch('/parameters');
-        renderParameters();
+        const data = await apiFetch('/backends');
+        backendsList = data.backends || [];
+        const target = currentBackendId || data.default ||
+            (backendsList.length ? backendsList[0].id : null);
+        await selectBackend(target, null);
     } catch (err) {
         showToast(t('msg.params_failed') + err.message);
     }
+}
+
+async function selectBackend(backendId, paramsToApply) {
+    if (!backendId) return;
+    try {
+        if (!paramDefsCache[backendId]) {
+            paramDefsCache[backendId] = await apiFetch('/backends/' + encodeURIComponent(backendId) + '/parameters');
+        }
+        currentBackendId = backendId;
+        parameterDefs = paramDefsCache[backendId];
+        renderParameters();
+        if (paramsToApply) {
+            applyParamsToUI(paramsToApply);
+        }
+    } catch (err) {
+        showToast(t('msg.params_failed') + err.message);
+    }
+}
+
+function onBackendChange() {
+    const sel = document.getElementById('backend-select');
+    if (!sel || sel.value === currentBackendId) return;
+    // Manual backend switch discards any re-submit diff tracking state.
+    sourceParams = null;
+    copiedParams = null;
+    selectBackend(sel.value, null);
+}
+
+function backendName(id) {
+    const b = backendsList.find(x => x.id === id);
+    return b ? b.name : id;
+}
+
+function backendDescription(id) {
+    const b = backendsList.find(x => x.id === id);
+    if (!b) return '';
+    if (currentLang === 'zh' && typeof BACKEND_DESC_ZH !== 'undefined' && BACKEND_DESC_ZH[id]) {
+        return BACKEND_DESC_ZH[id];
+    }
+    return b.description;
+}
+
+function backendMeta(id) {
+    return backendsList.find(x => x.id === id) || null;
+}
+
+function renderBackendSelector() {
+    if (!backendsList.length) return '';
+    const options = backendsList.map(b => {
+        const extras = [];
+        if (b.supports_texture === false) extras.push(t('backend.no_texture'));
+        const suffix = extras.length ? ' · ' + extras.join(', ') : '';
+        return '<option value="' + b.id + '" ' + (b.id === currentBackendId ? 'selected' : '') + '>'
+            + backendName(b.id) + suffix + '</option>';
+    }).join('');
+    const cur = backendMeta(currentBackendId);
+    let desc = cur ? backendDescription(cur.id) : '';
+    if (cur && cur.available === false) {
+        desc += '<div class="backend-warn">' + t('backend.not_downloaded') + '</div>';
+    }
+    return '<div class="backend-select">' +
+        '<div class="param-group-title">' + t('create.backend') + '</div>' +
+        '<select id="backend-select" onchange="onBackendChange()">' + options + '</select>' +
+        '<div class="backend-desc">' + desc + '</div>' +
+        '</div>';
 }
 
 function renderParameters() {
@@ -216,6 +286,9 @@ function renderParameters() {
     }
 
     let html = `<h3 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-dim);margin-bottom:1rem;">${t('create.params')}</h3>`;
+
+    // Backend selector (modly-style: switch backend, params follow the schema)
+    html += renderBackendSelector();
 
     // Preset bar
     html += `<div class="preset-bar">
@@ -267,14 +340,22 @@ function renderParamItem(p) {
     } else if (p.type === 'bool') {
         controlHtml = `<div class="param-checkbox-row"><input type="checkbox" id="param-${p.key}" ${p.default ? 'checked' : ''}></div>`;
     } else if (p.type === 'int' || p.type === 'float') {
-        const isRange = (p.max - p.min) <= 100 || p.type === 'float';
-        if (isRange && p.key !== 'seed' && p.key !== 'max_num_tokens' && p.key !== 'decimation_target' && p.key !== 'texture_size' && p.key !== 'image_resolution') {
+        if (p.key === 'seed') {
             controlHtml = `
-                <input type="range" id="param-${p.key}" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.default}" oninput="updateParamDisplay('${p.key}')">
-                <div class="param-value" id="param-${p.key}-val">${p.default}</div>
-            `;
+                <div class="param-row-2">
+                    <input type="number" id="param-${p.key}" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.default}">
+                    <button type="button" class="btn btn-outline btn-sm shuffle-btn" onclick="shuffleSeed()" title="${t('create.shuffle_seed')}">&#127922;</button>
+                </div>`;
         } else {
-            controlHtml = `<input type="number" id="param-${p.key}" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.default}">`;
+            const isRange = (p.max - p.min) <= 100 || p.type === 'float';
+            if (isRange && p.key !== 'max_num_tokens' && p.key !== 'decimation_target' && p.key !== 'texture_size' && p.key !== 'image_resolution' && p.key !== 'faces') {
+                controlHtml = `
+                    <input type="range" id="param-${p.key}" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.default}" oninput="updateParamDisplay('${p.key}')">
+                    <div class="param-value" id="param-${p.key}-val">${p.default}</div>
+                `;
+            } else {
+                controlHtml = `<input type="number" id="param-${p.key}" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.default}">`;
+            }
         }
     }
 
@@ -332,6 +413,17 @@ function updateParamDisplay(key) {
     }
 }
 
+function shuffleSeed() {
+    const el = document.getElementById('param-seed');
+    if (!el) return;
+    const def = parameterDefs['seed'];
+    const min = def && typeof def.min === 'number' && def.min > 0 ? def.min : 0;
+    const max = def && typeof def.max === 'number' ? def.max : 2147483647;
+    el.value = Math.floor(min + Math.random() * (max - min));
+    updateParamDisplay('seed');
+    if (sourceParams) checkParamDiff();
+}
+
 function attachParamListeners() {
     // Add change listeners for re-submit tracking
     if (sourceParams) {
@@ -378,7 +470,7 @@ function checkParamDiff() {
 }
 
 function collectParameters() {
-    const params = {};
+    const params = { backend: currentBackendId || 'pixal3d' };
     for (const key of Object.keys(parameterDefs)) {
         if (key === 'fov_unit') {
             const el = document.getElementById('param-fov_unit');
@@ -386,13 +478,21 @@ function collectParameters() {
             continue;
         }
         if (key === 'manual_fov') {
-            const auto = document.getElementById('fov-auto').checked;
-            if (auto) {
+            const autoEl = document.getElementById('fov-auto');
+            const fovInputEl = document.getElementById('param-manual_fov');
+            // Defensive: if the panel is mid-render or the backend schema
+            // changed, fall back to defaults instead of crashing on submit.
+            if (!autoEl || !fovInputEl) {
+                params[key] = parameterDefs[key].default;
+                continue;
+            }
+            if (autoEl.checked) {
                 params[key] = -1.0;
             } else {
-                const el = document.getElementById('param-manual_fov');
-                const unit = document.getElementById('param-fov_unit').value;
-                let val = parseFloat(el.value);
+                const unitEl = document.getElementById('param-fov_unit');
+                const unit = unitEl ? unitEl.value : 'deg';
+                let val = parseFloat(fovInputEl.value);
+                if (isNaN(val)) val = parameterDefs[key].default;
                 if (unit === 'rad') val = val * 180 / Math.PI;
                 params[key] = val;
             }
@@ -417,7 +517,13 @@ function collectParameters() {
     return params;
 }
 
-function applyParamsToUI(params) {
+async function applyParamsToUI(params) {
+    // Params (presets, re-submits, copied params) may belong to another
+    // backend — switch to it first so the form schema matches the values.
+    if (params && params.backend && params.backend !== currentBackendId) {
+        await selectBackend(params.backend, params);
+        return;
+    }
     for (const key of Object.keys(parameterDefs)) {
         if (key === 'fov_unit') {
             const el = document.getElementById('param-fov_unit');
@@ -923,6 +1029,12 @@ async function submitTask() {
 
         startProgressPolling(data.id);
         showToast(t('msg.submitted'));
+        // Show the Return button
+        const retBtn = document.getElementById('progress-return-btn');
+        if (retBtn) {
+            retBtn.textContent = t('msg.return');
+            retBtn.style.display = 'inline-flex';
+        }
         // Clear re-submit state after successful submission
         sourceParams = null;
     } catch (err) {
@@ -944,6 +1056,14 @@ function showProgress() {
 
 function hideProgress() {
     document.getElementById('progress-overlay').style.display = 'none';
+    const retBtn = document.getElementById('progress-return-btn');
+    if (retBtn) retBtn.style.display = 'none';
+}
+
+function returnToNewTask() {
+    hideProgress();
+    if (progressInterval) { clearInterval(progressInterval); progressInterval = null; }
+    navigateTo('create');
 }
 
 function startProgressPolling(taskId) {
@@ -1201,6 +1321,7 @@ async function loadTaskHistory() {
                     <h4>Task #${task.id}${task.parent_task_id ? ` <span class="status-badge status-completed" style="font-size:0.6rem;">${t('refine.refined')}</span>` : ''}${userLabel}</h4>
                     <div class="task-meta">
                         ${statusBadge}
+                        <span class="backend-badge">${backendName(task.parameters?.backend || 'pixal3d')}</span>
                         ${task.refine_status === 'completed' && !task.parent_task_id ? `<span style="font-size:0.65rem;color:var(--primary);">⚡${t('refine.refined')}</span>` : ''}
                         ${ratingHtml}
                         <span>${new Date(task.created_at).toLocaleString()}</span>
@@ -1318,7 +1439,7 @@ function renderCompareContent(content) {
         <div class="compare-item">
             <div class="compare-item-header">
                 <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
-                    <h4>Task #${task.id}${refineBadge}</h4>
+                    <h4>Task #${task.id}${refineBadge} <span class="backend-badge">${backendName(task.parameters?.backend || 'pixal3d')}</span></h4>
                     ${renderStarRating(task.id, task.rating || 0)}
                     <button class="btn btn-outline btn-sm" onclick="copyParamsFromTask(compareTasks[${idx}].parameters)" style="padding:0.2rem 0.5rem;font-size:0.72rem;">${t('detail.copy_params')}</button>
                 </div>
@@ -1330,6 +1451,7 @@ function renderCompareContent(content) {
             <model-viewer
                 src="${glbUrl}"
                 camera-controls
+                interaction-prompt="none"
                 shadow-intensity="1.5"
                 environment-image="neutral"
                 exposure="1.2"
@@ -1340,7 +1462,6 @@ function renderCompareContent(content) {
     html += `</div>`;
 
     content.innerHTML = html;
-    setupCompareSync();
 }
 
 function toggleCompareParams() {
@@ -1385,49 +1506,91 @@ function setupCompareSyncInContainer(container) {
     const viewers = container.querySelectorAll('[data-compare-mv]');
     const initialOrbit = new Map();
     const initialTarget = new Map();
+    const initialFov = new Map();
 
+    // model-viewer's default zoom limits derive each model's min radius/fov
+    // from its own bounding sphere and framing, so different models clamp at
+    // different ratios. Pinning every viewer to the same fraction of its own
+    // framed state keeps the relative zoom/pan mapping valid at the extremes.
+    const MIN_ZOOM_RADIUS_RATIO = 0.2;
+    const MIN_ZOOM_FOV_RATIO = 0.4;
+
+    // Capture each viewer's framed camera as the baseline for the relative
+    // zoom/pan mapping. The camera may only be read once the model has
+    // loaded: before that, model-viewer exposes a placeholder orbit (which
+    // can even have a negative radius) that would corrupt the mapping.
     function recordInitial(mv) {
+        if (initialOrbit.has(mv) || !mv.loaded) return;
         try {
             const o = mv.getCameraOrbit();
             const tg = mv.getCameraTarget();
-            if (o.radius > 0 && !initialOrbit.has(mv)) {
-                initialOrbit.set(mv, o);
-                initialTarget.set(mv, tg);
+            const fov = mv.getFieldOfView();
+            if (o && o.radius > 0) {
+                initialOrbit.set(mv, { theta: o.theta, phi: o.phi, radius: o.radius });
+                initialTarget.set(mv, { x: tg.x, y: tg.y, z: tg.z });
+                initialFov.set(mv, fov);
+                // Normalize the zoom-in floor to a fixed ratio of the framed
+                // state so every viewer can reach the same relative zoom.
+                mv.minCameraOrbit = `auto auto ${(o.radius * MIN_ZOOM_RADIUS_RATIO).toFixed(4)}m`;
+                mv.minFieldOfView = `${(fov * MIN_ZOOM_FOV_RATIO).toFixed(2)}deg`;
             }
-        } catch (e) {}
+        } catch (e) { /* ignore */ }
     }
 
     viewers.forEach(mv => {
-        mv.addEventListener('load', () => setTimeout(() => recordInitial(mv), 200));
-        setTimeout(() => recordInitial(mv), 500);
+        // 'load' fires just before the camera finishes framing the model, so
+        // poll a few frames until the framed camera is in place.
+        mv.addEventListener('load', () => {
+            let frames = 0;
+            const poll = () => {
+                recordInitial(mv);
+                if (!initialOrbit.has(mv) && ++frames < 60) requestAnimationFrame(poll);
+            };
+            requestAnimationFrame(poll);
+        });
     });
 
-    viewers.forEach(mv => {
-        mv.addEventListener('camera-change', () => {
-            if (compareSyncActive) return;
-            compareSyncActive = true;
-            const orbit = mv.getCameraOrbit();
-            const target = mv.getCameraTarget();
-            const srcInitR = initialOrbit.get(mv)?.radius || orbit.radius;
-            const srcInitT = initialTarget.get(mv) || { x: 0, y: 0, z: 0 };
-            const zoomRatio = orbit.radius / srcInitR;
-            const panOffsetX = (target.x - srcInitT.x) / srcInitR;
-            const panOffsetY = (target.y - srcInitT.y) / srcInitR;
-            const panOffsetZ = (target.z - srcInitT.z) / srcInitR;
+    function propagateFrom(mv, orbit, target, fov) {
+        const srcInit = initialOrbit.get(mv) || orbit;
+        const srcInitT = initialTarget.get(mv) || { x: 0, y: 0, z: 0 };
+        const srcInitFov = initialFov.get(mv) || fov;
+        const srcInitR = srcInit.radius || orbit.radius;
+        const radiusRatio = orbit.radius / srcInitR;
+        const fovRatio = fov / srcInitFov;
+        const panOffsetX = (target.x - srcInitT.x) / srcInitR;
+        const panOffsetY = (target.y - srcInitT.y) / srcInitR;
+        const panOffsetZ = (target.z - srcInitT.z) / srcInitR;
 
-            viewers.forEach(other => {
-                if (other === mv) return;
-                const otherInitR = initialOrbit.get(other)?.radius || orbit.radius;
-                const otherInitT = initialTarget.get(other) || { x: 0, y: 0, z: 0 };
-                const otherRadius = otherInitR * zoomRatio;
-                const otherTargetX = otherInitT.x + panOffsetX * otherInitR;
-                const otherTargetY = otherInitT.y + panOffsetY * otherInitR;
-                const otherTargetZ = otherInitT.z + panOffsetZ * otherInitR;
-                other.cameraOrbit = `${(orbit.theta * 180 / Math.PI).toFixed(2)}deg ${(orbit.phi * 180 / Math.PI).toFixed(2)}deg ${otherRadius.toFixed(4)}m`;
-                other.cameraTarget = `${otherTargetX.toFixed(4)}m ${otherTargetY.toFixed(4)}m ${otherTargetZ.toFixed(4)}m`;
-                other.jumpCameraToGoal();
-            });
-            requestAnimationFrame(() => { compareSyncActive = false; });
+        viewers.forEach(other => {
+            if (other === mv) return;
+            const otherInit = initialOrbit.get(other);
+            const otherInitT = initialTarget.get(other);
+            const otherInitFov = initialFov.get(other);
+            if (!otherInit || !otherInitT || !otherInitFov) return; // baseline not ready yet
+            const otherInitR = otherInit.radius;
+            const otherRadius = otherInitR * radiusRatio;
+            const otherTargetX = otherInitT.x + panOffsetX * otherInitR;
+            const otherTargetY = otherInitT.y + panOffsetY * otherInitR;
+            const otherTargetZ = otherInitT.z + panOffsetZ * otherInitR;
+            other.cameraOrbit = `${(orbit.theta * 180 / Math.PI).toFixed(2)}deg ${(orbit.phi * 180 / Math.PI).toFixed(2)}deg ${otherRadius.toFixed(4)}m`;
+            other.cameraTarget = `${otherTargetX.toFixed(4)}m ${otherTargetY.toFixed(4)}m ${otherTargetZ.toFixed(4)}m`;
+            other.fieldOfView = `${(otherInitFov * fovRatio).toFixed(2)}deg`;
+            other.jumpCameraToGoal();
+        });
+    }
+
+    viewers.forEach(mv => {
+        mv.addEventListener('camera-change', (event) => {
+            // Only real user interactions (drag/wheel/keys) drive the sync.
+            // Programmatic camera changes (framing on load, damper settling,
+            // our own sync writes echoing back) report a 'none'/'automatic'
+            // source and must be ignored — otherwise staggered model loads
+            // propagate the placeholder/framing camera state and corrupt the
+            // other viewers.
+            const source = event && event.detail && event.detail.source;
+            if (source !== 'user-interaction') return;
+            recordInitial(mv); // freeze baseline if not captured yet
+            propagateFrom(mv, mv.getCameraOrbit(), mv.getCameraTarget(), mv.getFieldOfView());
         });
     });
 }
@@ -1613,14 +1776,14 @@ function renderBeforeAfter(originalUrl, refinedUrl, originalLabel, refinedLabel,
     html += `<div class="compare-panel">
         <div class="before-after-label">${originalLabel}</div>
         <div class="viewer-wrapper" data-compare-mv-wrap>
-            <model-viewer src="${originalUrl}" camera-controls auto-rotate shadow-intensity="1.5" environment-image="neutral" exposure="1.2" data-compare-mv></model-viewer>
+            <model-viewer src="${originalUrl}" camera-controls interaction-prompt="none" shadow-intensity="1.5" environment-image="neutral" exposure="1.2" data-compare-mv></model-viewer>
         </div>
     </div>`;
     // Refined
     html += `<div class="compare-panel">
         <div class="before-after-label">${refinedLabel}</div>
         <div class="viewer-wrapper" data-compare-mv-wrap>
-            <model-viewer src="${refinedUrl}" camera-controls auto-rotate shadow-intensity="1.5" environment-image="neutral" exposure="1.2" data-compare-mv></model-viewer>
+            <model-viewer src="${refinedUrl}" camera-controls interaction-prompt="none" shadow-intensity="1.5" environment-image="neutral" exposure="1.2" data-compare-mv></model-viewer>
         </div>
         ${refinedDownloadUrl ? `<div style="margin-top:0.4rem;">
             <a href="${refinedDownloadUrl}" download class="btn btn-primary btn-sm">${t('refine.download_refined')}</a>
@@ -1655,6 +1818,13 @@ async function loadTaskDetail(taskId) {
         currentDetailParams = task.parameters || {};
         navigateTo('detail');
         document.getElementById('detail-title').textContent = `Task #${taskId}`;
+        const detailBackendId = (task.parameters && task.parameters.backend) || 'pixal3d';
+        const detailBackendMeta = backendMeta(detailBackendId);
+        const detailBackendBadge = document.getElementById('detail-backend-badge');
+        if (detailBackendBadge) {
+            detailBackendBadge.textContent = backendName(detailBackendId);
+            detailBackendBadge.style.display = 'inline-block';
+        }
 
         const content = document.getElementById('detail-content');
         let html = '';
@@ -1721,8 +1891,18 @@ async function loadTaskDetail(taskId) {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 ${primaryDownloadLabel}
             </a>`;
+            // OBJ download — always available for completed tasks
+            {
+                const objUrl = isRefineChild
+                    ? authUrl('/api/tasks/' + taskId + '/download/refined/obj')
+                    : authUrl('/api/tasks/' + taskId + '/download/obj');
+                html += `<a href="${objUrl}" download class="btn btn-outline btn-sm">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    ${t('detail.download_obj')}
+                </a>`;
+            }
             // Refine button — only on parent (non-refine) completed tasks.
-            if (!isRefineChild) {
+            if (!isRefineChild && (detailBackendMeta?.supports_refine !== false)) {
                 html += `<button class="btn btn-outline btn-sm" onclick="openRefineModal(${taskId})">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
                     ${t('refine.title')}
@@ -1792,12 +1972,13 @@ async function loadTaskDetail(taskId) {
         }
         if (task.parameters) {
             for (const [k, v] of Object.entries(task.parameters)) {
+                if (k === 'backend') {
+                    html += `<span class="key">${t('create.backend')}</span><span class="val">${backendName(v)}</span>`;
+                    continue;
+                }
                 html += `<span class="key">${k}</span><span class="val">${v}</span>`;
             }
         }
-        html += '</div>';
-        html += '</div>';
-
         content.innerHTML = html;
 
         // Setup image zoom if completed

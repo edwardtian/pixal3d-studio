@@ -53,10 +53,22 @@ RUN pip install \
     einops safetensors sentencepiece scipy scikit-learn \
     fast_simplification xatlas pymeshlab
 
-# gltfpack (meshoptimizer) — Draco + KTX2 + meshopt GLB compression for the
-# refine post-process pipeline. Single static binary from upstream releases.
-RUN python -c "import urllib.request; urllib.request.urlretrieve('https://github.com/zeux/meshoptimizer/releases/latest/download/gltfpack-linux', '/usr/local/bin/gltfpack')" && \
-    chmod +x /usr/local/bin/gltfpack
+# gltfpack (meshoptimizer) — quantized geometry + WebP/KTX2 texture GLB
+# compression for the refine post-process pipeline. Single static binary from
+# upstream releases (the release asset is a zip, not the old `gltfpack-linux`).
+RUN python -c "import urllib.request, zipfile; \
+    urllib.request.urlretrieve('https://github.com/zeux/meshoptimizer/releases/download/v1.2/gltfpack-ubuntu.zip', '/tmp/gltfpack.zip'); \
+    zipfile.ZipFile('/tmp/gltfpack.zip').extract('gltfpack', '/usr/local/bin/')" && \
+    chmod +x /usr/local/bin/gltfpack && rm -f /tmp/gltfpack.zip
+
+# ---- TripoSG backend (VAST-AI/TripoSG) ----
+# The triposg package is not published on PyPI — clone the source and expose
+# it via PYTHONPATH (see the ENV PYTHONPATH line below). Pure-Python deps for
+# the rectified-flow transformer + DiffDMC/marching-cubes decoders.
+RUN git clone https://github.com/VAST-AI-Research/TripoSG.git /opt/triposg && \
+    pip install \
+    "scikit-image" "omegaconf" "antlr4-python3-runtime==4.9.3" "PyYAML" \
+    "jaxtyping" "typeguard" "peft"
 
 # ---- Build GPU packages from source (compatible with Blackwell) ----
 # Set CUDA arch for PyTorch C++ extensions (no GPU at build time, must specify)
@@ -90,6 +102,17 @@ RUN NATTEN_CUDA_ARCH=${NATTEN_CUDA_ARCH} NATTEN_N_WORKERS=$(nproc) \
      NATTEN_CUDA_ARCH=${NATTEN_CUDA_ARCH} NATTEN_N_WORKERS=$(nproc) \
      pip install git+https://github.com/SHI-Labs/NATTEN.git --no-build-isolation)
 
+# diso — CUDA-accelerated differentiable iso-surface extraction, required by
+# the TripoSG backend (DiffDMC flash decoder; the marching-cubes fallback also
+# lives behind this import). PyPI ships source-only, so build it here against
+# the image's CUDA toolchain. FORCE_CUDA enables the CUDA path on build hosts
+# without a GPU; NVCC_FLAGS relaxes the compiler check for newer nvcc.
+RUN FORCE_CUDA=1 NVCC_FLAGS="-O3 -allow-unsupported-compiler" \
+    pip install --no-build-isolation diso || \
+    (git clone --depth 1 https://github.com/SarahWeiii/diso.git /tmp/diso && \
+     cd /tmp/diso && FORCE_CUDA=1 NVCC_FLAGS="-O3 -allow-unsupported-compiler" \
+     pip install --no-build-isolation . && rm -rf /tmp/diso)
+
 # MoGe (camera estimation — install without deps to avoid utils3d conflict)
 RUN pip install --no-deps git+https://github.com/microsoft/MoGe.git
 
@@ -101,7 +124,11 @@ RUN pip install --force-reinstall --no-deps \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# Instant Meshes — automatic quad retopology tool (CLI binary)
+# Instant Meshes — automatic quad retopology tool (CLI binary).
+# NOTE: build-essential (gcc/g++) is deliberately KEPT in the final image —
+# Triton compiles its CUDA runtime helpers with a C compiler at first use, and
+# the FlexGEMM autotuner (used by the Pixal3D pipeline) needs it whenever it
+# benchmarks a new kernel shape. Purging it breaks sparse-conv autotuning.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git cmake build-essential libxrandr-dev libxinerama-dev \
         libxcursor-dev libxi-dev libxxf86vm-dev libgl-dev && \
@@ -111,13 +138,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sed -i 's/cmake_minimum_required(VERSION 2.8.11.2)/cmake_minimum_required(VERSION 3.5)/' ext/nanogui/ext/glfw/CMakeLists.txt && \
     sed -i '/cmake_policy(SET CMP0042 OLD)/d' ext/nanogui/ext/glfw/CMakeLists.txt && \
     mkdir build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-changes-meaning" \
+    cmake .. -DCMAKE_BUILD_TYPE=Release \
+             -DCMAKE_CXX_FLAGS="-Wno-changes-meaning -Wno-int-in-bool-context" \
              -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
              -DGLFW_BUILD_DOCS=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_EXAMPLES=OFF && \
     make -j$(nproc) && \
     cp "Instant Meshes" /usr/local/bin/instant-meshes && chmod +x /usr/local/bin/instant-meshes && \
     cd /tmp && rm -rf instant-meshes && \
-    apt-get purge -y git cmake build-essential libxrandr-dev libxinerama-dev \
+    apt-get purge -y git cmake libxrandr-dev libxinerama-dev \
         libxcursor-dev libxi-dev libxxf86vm-dev libgl-dev && \
     apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
@@ -129,8 +157,8 @@ COPY . .
 
 RUN mkdir -p data/uploads data/outputs data/renders data/db models
 
-# Make trellis2 and pixal3d packages importable
-ENV PYTHONPATH="/opt/trellis2:/opt/pixal3d:${PYTHONPATH}"
+# Make trellis2, pixal3d and triposg packages importable
+ENV PYTHONPATH="/opt/trellis2:/opt/pixal3d:/opt/triposg:${PYTHONPATH}"
 
 ENV OPENCV_IO_ENABLE_OPENEXR=1
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -140,6 +168,10 @@ ENV ATTN_BACKEND=sdpa
 ENV OMP_NUM_THREADS=4
 # HuggingFace model cache — mapped from host's models/ directory at runtime
 ENV HF_HOME=/app/models
+# Persist the FlexGEMM/Triton autotune results in the mounted models volume so
+# container rebuilds don't re-run sparse-conv autotuning from scratch.
+# (app/backends/pixal3d.py sets this with setdefault, so this ENV wins.)
+ENV FLEX_GEMM_AUTOTUNE_CACHE_PATH=/app/models/flex_gemm_autotune_cache.json
 
 EXPOSE 8000
 

@@ -152,7 +152,7 @@
         <div class="view" id="view-detail">
             <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">
                 <button class="btn btn-outline btn-sm" onclick="navigateTo('history')" data-i18n="detail.back">Back</button>
-                <h2 id="detail-title">Task Detail</h2>
+                <h2 id="detail-title">Task Detail</h2> <span id="detail-backend-badge" class="backend-badge" style="display:none;"></span>
             </div>
             <div class="task-detail-layout" id="detail-content"></div>
         </div>
@@ -289,6 +289,9 @@
             <div class="progress-bar-fill progress-subtask-fill" id="progress-subtask-fill"></div>
         </div>
         <div class="progress-step-text" id="progress-subtask-step"></div>
+        <div style="margin-top:1rem;">
+            <button class="btn btn-outline btn-sm" id="progress-return-btn" onclick="returnToNewTask()" style="display:none;"></button>
+        </div>
     </div>
 </div>
 

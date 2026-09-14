@@ -66,32 +66,40 @@ def run(ctx):
 
 
 def _run_gltfpack(ctx, in_path: str, out_path: str):
-    """Invoke gltfpack with Draco + KTX2 + meshopt."""
-    draco_q = int(ctx.params.get("refine_draco_quality", 8))
-    ktx2 = bool(ctx.params.get("refine_ktx2", True))
+    """Invoke gltfpack (meshoptimizer) with quantized geometry + compressed
+    textures.
+
+    gltfpack 1.x dropped Draco; it always applies vertex-cache optimization and
+    KHR_mesh_quantization by default, and we add compressed textures:
+      - ``refine_ktx2`` True  -> KTX2/BasisU (``-tc``, GPU-native, best for game
+        engines; NOT supported by the model-viewer web preview).
+      - ``refine_ktx2`` False -> WebP (``-tw``, web-preview compatible).
+
+    We deliberately do NOT enable ``-cc``/``-c`` (EXT_meshopt_compression) or
+    ``-gt`` (which would regenerate and replace our MikkTSpace tangents), so the
+    output stays loadable by model-viewer and keeps our baked tangents.
+    """
+    tex_q = int(ctx.params.get("refine_draco_quality", 8))
+    ktx2 = bool(ctx.params.get("refine_ktx2", False))
 
     cmd = [
         shutil.which("gltfpack"),
         "-i", in_path,
         "-o", out_path,
-        # meshopt vertex+index compression (always on for game-engine preset)
-        "-cc",
-        # Draco geometry compression
-        "-d",
-        "-q", str(draco_q),       # quantization ratio (1..20; higher=closer)
-        # Keep normals/UVs at 16-bit precision
-        "-vn", "16",
-        "-vu", "16",
-        # Generate tangent attribute if missing
-        "-tn",
+        # Vertex precision (position/uv/normal). Normals stay 8-bit to match
+        # the tangent quantization gltfpack applies.
+        "-vp", "14",
+        "-vt", "12",
+        "-vn", "8",
+        # Texture encoding quality (1..10, higher = larger + crisper).
+        "-tq", str(tex_q),
     ]
-    if ktx2:
-        cmd.append("-tk")  # convert textures to KTX2
+    cmd.append("-tc" if ktx2 else "-tw")
 
     print(f"[Refine/Compress] running: {' '.join(cmd)}", flush=True)
     env = dict(os.environ)
-    # gltfpack needs toktx on PATH for KTX2; it usually bundles it next to the
-    # binary. Add the gltfpack bin dir to PATH just in case.
+    # gltfpack bundles the BasisU/toktx logic internally, but keep its bin dir
+    # on PATH for any auxiliary tooling it may shell out to.
     gltfpack_dir = os.path.dirname(shutil.which("gltfpack") or "")
     if gltfpack_dir:
         env["PATH"] = gltfpack_dir + os.pathsep + env.get("PATH", "")

@@ -15,7 +15,13 @@ A multi-user web application for [Pixal3D](https://github.com/TencentARC/Pixal3D
    - Parameters are organized into groups: Base, Sparse Structure, Shape, Texture, Camera, Advanced, GLB Export
    - 23 parameters total including guidance strength, sampling steps, rescale factors, FOV, resolution, decimation, texture size, etc.
 
-3. **Task Queue & History**
+3. **Selectable Generation Backends**
+   - The create view lets the user pick the generation backend (Pixal3D or TripoSG)
+   - The parameter form re-renders from the selected backend's schema — each backend exposes only its own parameters
+   - Backend choice is stored with each task and preset, so re-submits and presets restore the right schema
+   - See [Generation Backends](#generation-backends) below
+
+4. **Task Queue & History**
    - Multiple users can submit tasks concurrently into a shared queue
    - Tasks are processed one-by-one (FIFO) by a background worker
    - Each user sees only their own task history
@@ -54,14 +60,21 @@ pixel3d/
 │   ├── models.py        # SQLAlchemy models (User, Task)
 │   ├── schemas.py       # Pydantic schemas
 │   ├── auth.py          # JWT auth + role guards
-│   ├── parameters.py    # All Pixal3D parameter definitions with tooltips
-│   ├── pipeline.py      # Pixal3D inference wrapper
+│   ├── parameters.py    # Per-backend parameter definitions + validation
+│   ├── stages.py        # Per-backend sub-task / progress layout
+│   ├── pipeline.py      # Back-compat shim (→ app.backends.pixal3d)
+│   ├── backends/        # Generation backend registry (modly-style)
+│   │   ├── base.py      #   BackendBase contract
+│   │   ├── registry.py  #   per-process backend registry
+│   │   ├── pixal3d.py   #   Pixal3D/TRELLIS.2 backend
+│   │   └── triposg.py   #   VAST TripoSG backend
 │   ├── worker.py        # Background task processor
 │   ├── queue.py         # Async task queue
 │   └── routers/
 │       ├── auth.py      # /api/auth/*
 │       ├── users.py     # /api/users/* (admin)
 │       ├── tasks.py     # /api/tasks/*
+│       ├── backends.py  # /api/backends (list + per-backend params)
 │       ├── parameters.py# /api/parameters
 │       └── queue.py     # /api/queue/*
 ├── static/
@@ -76,6 +89,57 @@ pixel3d/
 ├── run.py               # Python entry point
 └── .env.example         # Environment config template
 ```
+
+## Generation Backends
+
+The worker processes generate meshes through a **backend registry** (app/backends/), modeled on
+[modly](https://github.com/lightningpixel/modly)'s generator architecture: each backend is a
+self-contained image -> GLB pipeline with its own parameter schema, sub-task/progress layout and
+VRAM requirements. Workers load a backend lazily on the first task that requests it and unload the
+previous one when switching, so VRAM is shared between backends.
+
+The create view exposes a **Backend** selector; changing it re-fetches the backend's parameter
+schema (GET /api/backends/{id}/parameters) and re-renders the form accordingly. The selected
+backend is saved inside each task's parameters (and presets), so re-submitting a task or applying
+a preset restores the matching schema automatically.
+
+| Backend  | Model | Output | Refine | VRAM | Notes |
+|----------|-------|--------|--------|------|-------|
+| pixal3d | Tencent Pixal3D / TRELLIS.2 | Textured GLB (PBR base color, metallic, roughness) | yes | ~18 GB (or ~10-12 GB low-VRAM) | The original pipeline: sparse structure -> shape latent -> texture latent, camera estimation via MoGe-2 |
+| triposg | VAST-AI/TripoSG | Geometry + base-color texture projected from the input photo (optional; neutral PBR material) | no | ~8-10 GB | Rectified-flow transformer; DiffDMC (flash) or Marching Cubes decoder; RMBG-2.0 background removal; MoGe-2 camera estimate + xatlas/nvdiffrast texture bake |
+
+### API
+
+- `GET /api/backends` — list backends with capabilities (id, name, description, VRAM, supports_texture, supports_refine, available, default)
+- `GET /api/backends/{backend_id}/parameters` — parameter schema for one backend
+- `GET /api/parameters?backend={backend_id}` — schema for a backend (defaults to DEFAULT_BACKEND)
+- `POST /api/tasks` — the parameters JSON now carries `"backend": "<id>"` (validated server-side)
+
+### Configuration
+
+```ini
+# .env
+DEFAULT_BACKEND=pixal3d            # backend selected by default in the UI
+TRIPOSG_MODEL_PATH=VAST-AI/TripoSG # HF repo id or local path
+RMBG_MODEL_NAME=briaai/RMBG-2.0   # bg-removal model for the TripoSG preprocess
+```
+
+The TripoSG backend needs the `triposg` package (cloned into /opt/triposg in the container) and
+the `diso` CUDA extension — both are installed by the Containerfile. VAST-AI/TripoSG is added
+to download_models.sh (the repo is not gated).
+
+Note on diffusers versions: `VAST-AI/TripoSG`'s `model_index.json` references custom triposg
+classes. diffusers >= 0.32 no longer resolves those from arbitrary module paths, so the backend
+tries the plain `TripoSGPipeline.from_pretrained(...)` first and falls back to constructing the
+pipeline manually from its components (`vae`, `transformer`, `scheduler`, `image_encoder_dinov2`,
+`feature_extractor_dinov2`) — which works on every diffusers version.
+
+### Adding another backend
+
+1. Create app/backends/<id>.py with a BackendBase subclass (see app/backends/base.py).
+2. Register it in BACKEND_CLASSES in app/backends/registry.py.
+3. Add its parameter schema in app/parameters.py and its sub-tasks in app/stages.py.
+4. No other changes are needed — the UI, workers and validation pick it up automatically.
 
 ## Quick Start (Podman)
 

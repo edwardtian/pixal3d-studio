@@ -34,9 +34,20 @@ def run(ctx):
     import cv2
 
     mask = ctx.tex_coverage
-    mask_inv = (~mask).astype(np.uint8)
     H, W = mask.shape
     _progress(ctx, 0)
+
+    # ---- UV bleed/padding: extend each chart's edge color outward by a few
+    # texels (nearest-neighbor fill) so mipmaps don't bleed neighboring chart
+    # colors at seams. Extends the existing edge color (unlike inpaint, which
+    # synthesizes and can smear on large gaps). ----
+    padding = int(ctx.params.get("refine_uv_padding", 8))
+    if padding > 0:
+        padding = max(1, int(round(padding * (W / 2048))))
+        _bleed_textures(ctx, padding)
+        mask = ctx.tex_coverage  # coverage now includes the padding band
+
+    mask_inv = (~mask).astype(np.uint8)
 
     # Dilate the uncovered region by 1px so the inpaint bleeds slightly past
     # the boundary — hides aliasing at chart edges.
@@ -100,3 +111,40 @@ def _inpaint_single(chan: np.ndarray, mask_inv: np.ndarray,
         # the "patch" preset with a larger radius.
         flag = cv2.INPAINT_NS
     return cv2.inpaint(chan, mask_inv, radius, flag)
+
+
+def _bleed_textures(ctx, padding: int):
+    """Extend chart edge colors outward by ``padding`` texels.
+
+    Fills the padding band (between the original coverage and the dilated
+    coverage) with the color of the nearest covered texel for every texture
+    channel. Updates ``ctx.tex_coverage`` to include the padding band so the
+    subsequent inpaint only handles the remaining deep chart gaps.
+    """
+    import cv2
+    from scipy import ndimage
+
+    mask = ctx.tex_coverage
+    if mask is None or padding <= 0:
+        return
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (padding * 2 + 1, padding * 2 + 1))
+    padded = cv2.dilate(mask.astype(np.uint8), kernel).astype(bool)
+    band = padded & ~mask
+    if band.sum() == 0:
+        return
+
+    # Index of the nearest covered texel for every texel.
+    idx = ndimage.distance_transform_edt(
+        ~mask, return_distances=False, return_indices=True)
+    for attr in ("tex_base_color", "tex_metallic", "tex_roughness",
+                 "tex_alpha", "tex_ao", "tex_normal"):
+        arr = getattr(ctx, attr, None)
+        if arr is None:
+            continue
+        nearest = arr[tuple(idx)]
+        arr[band] = nearest[band]
+        setattr(ctx, attr, arr)
+    ctx.tex_coverage = padded
+    print(f"[Refine/Inpaint] bleed: {int(band.sum())} texels padded by "
+          f"{padding}px", flush=True)

@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from app.config import settings
 from app.database import init_db
 from app.gpu import worker_manager
-from app.routers import auth, users, tasks, parameters, queue, presets, system
+from app.routers import auth, users, tasks, parameters, queue, presets, system, backends
 
 
 @asynccontextmanager
@@ -24,6 +24,7 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(tasks.router)
 app.include_router(parameters.router)
+app.include_router(backends.router)
 app.include_router(queue.router)
 app.include_router(presets.router)
 app.include_router(system.router)

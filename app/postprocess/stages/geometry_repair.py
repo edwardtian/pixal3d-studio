@@ -116,8 +116,16 @@ def run(ctx):
               faces=torch.from_numpy(f_np).to("cuda"))
     _progress(ctx, 6)
 
-    # ---- remove small connected components ----
-    mesh.remove_small_connected_components(1e-5)
+    # ---- remove floaters (small disconnected components) ----
+    # Use a relative area threshold instead of a fixed constant so larger
+    # meshes drop proportionally sized fragments.
+    v, f = mesh.read()
+    v_np = v.cpu().numpy() if hasattr(v, "cpu") else np.asarray(v)
+    f_np = f.cpu().numpy() if hasattr(f, "cpu") else np.asarray(f)
+    ratio = float(ctx.params.get("refine_floater_ratio", 0.0001))
+    total_area = _mesh_surface_area(v_np, f_np)
+    threshold = ratio * total_area if total_area > 0 else 1e-5
+    mesh.remove_small_connected_components(threshold)
     mesh.fill_holes(max_hole_perimeter=3e-2)
     mesh.unify_face_orientations()
     _progress(ctx, 7)
@@ -228,3 +236,14 @@ def _taubin_smooth(v: np.ndarray, f: np.ndarray,
         out = _laplacian_step(out, f, lam)
         out = _laplacian_step(out, f, mu)
     return out
+
+
+def _mesh_surface_area(v: np.ndarray, f: np.ndarray) -> float:
+    """Total surface area of a triangle mesh."""
+    if len(f) == 0:
+        return 0.0
+    a = v[f[:, 0]]
+    b = v[f[:, 1]]
+    c = v[f[:, 2]]
+    cross = np.cross(b - a, c - a)
+    return float(0.5 * np.linalg.norm(cross, axis=1).sum())

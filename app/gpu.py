@@ -178,6 +178,7 @@ class WorkerProcess:
         self.task_queue = _mp_ctx.Queue()
         self.busy = _mp_ctx.Value('b', False)
         self.current_task_id = _mp_ctx.Value('i', 0)
+        self.loaded = _mp_ctx.Value('b', False)
         self.process: Optional[mp.Process] = None
         self.stop_requested = False
         self.pipeline_loaded = False
@@ -187,7 +188,7 @@ class WorkerProcess:
         self.process = _mp_ctx.Process(
             target=_worker_main_wrapper,
             args=(self.gpu_id, self.task_queue, self.busy,
-                  self.current_task_id, db_url),
+                  self.current_task_id, self.loaded, db_url),
             daemon=True,
         )
         self.process.start()
@@ -214,19 +215,19 @@ class WorkerProcess:
             "gpu_id": self.gpu_id,
             "busy": bool(self.busy.value) if self.process else False,
             "current_task_id": int(self.current_task_id.value) if self.process and self.busy.value else None,
-            "pipeline_loaded": self.pipeline_loaded and self.is_alive(),
+            "pipeline_loaded": bool(self.loaded.value) if self.process else False,
             "stop_requested": self.stop_requested,
         }
 
 
-def _worker_main_wrapper(gpu_id, task_queue, busy, current_task_id, db_url):
+def _worker_main_wrapper(gpu_id, task_queue, busy, current_task_id, loaded, db_url):
     """Wrapper to set up sys.path before calling the real worker entry."""
     # Ensure the app package is importable in the spawned process
     app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if app_root not in sys.path:
         sys.path.insert(0, app_root)
     from app.worker_proc import worker_entry
-    worker_entry(gpu_id, task_queue, busy, current_task_id, db_url)
+    worker_entry(gpu_id, task_queue, busy, current_task_id, loaded, db_url)
 
 
 import sys  # needed for _worker_main_wrapper
@@ -278,16 +279,10 @@ class WorkerManager:
             return [gid for gid, w in self._workers.items() if not w.stop_requested]
 
     async def get_workers_status(self) -> list[dict]:
-        # Check if pipelines are loaded (worker is alive and has been running for a bit)
+        # pipeline_loaded is now authoritative: workers flip a shared flag once
+        # any backend has finished loading.
         async with self._lock:
-            statuses = []
-            for gid, w in self._workers.items():
-                status = w.as_status()
-                # If the process has been alive for > 60s, assume pipeline is loaded
-                if w.is_alive() and not status["pipeline_loaded"]:
-                    w.pipeline_loaded = True  # optimistic; real check would need IPC
-                statuses.append(w.as_status())
-            return statuses
+            return [w.as_status() for w in self._workers.values()]
 
     async def _dispatcher_loop(self):
         min_free_mb = int(settings.GPU_MIN_FREE_VRAM_GB * 1024)

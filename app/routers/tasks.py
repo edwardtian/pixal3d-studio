@@ -44,7 +44,10 @@ async def create_task(
 ):
     import json
     params = json.loads(parameters)
-    params = validate_parameters(params)
+    try:
+        params = validate_parameters(params)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     image_path = str(settings.UPLOAD_DIR / image_filename)
     if not os.path.exists(image_path):
@@ -239,6 +242,107 @@ async def download_refined_glb(
     )
 
 
+def _glb_to_obj_zip(glb_path: str, zip_path: str, name_prefix: str):
+    """Convert a GLB file to OBJ + MTL + textures and zip them."""
+    import zipfile
+    import tempfile
+    import trimesh
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        scene = trimesh.load(str(glb_path), process=False, force='scene')
+
+        # Merge all meshes in the scene into one for OBJ export
+        meshes = [g for g in scene.geometry.values() if isinstance(g, trimesh.Trimesh)]
+        if not meshes:
+            raise RuntimeError("No meshes found in GLB")
+        merged = trimesh.util.concatenate(meshes)
+
+        obj_filename = f"{name_prefix}.obj"
+        obj_path = os.path.join(tmpdir, obj_filename)
+        merged.export(obj_path)
+
+        # Collect all files written by trimesh (obj + mtl + png textures)
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for fname in os.listdir(tmpdir):
+                fpath = os.path.join(tmpdir, fname)
+                if os.path.isfile(fpath):
+                    zf.write(fpath, fname)
+
+
+@router.get("/{task_id}/download/obj")
+async def download_obj(
+    task_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Convert the task's GLB to OBJ + MTL + textures and return as ZIP."""
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalars().first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.user_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not your task")
+
+    if not task.output_glb_path:
+        raise HTTPException(status_code=400, detail="GLB not ready")
+    glb_path = settings.OUTPUT_DIR / task.output_glb_path
+    if not glb_path.exists():
+        raise HTTPException(status_code=404, detail="GLB file not found")
+
+    zip_path = str(settings.OUTPUT_DIR / f"task_{task_id}_obj.zip")
+    try:
+        _glb_to_obj_zip(str(glb_path), zip_path, f"pixal3d_task_{task_id}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OBJ conversion failed: {e}")
+
+    return FileResponse(zip_path, media_type="application/zip",
+                        filename=f"pixal3d_task_{task_id}_obj.zip")
+
+
+@router.get("/{task_id}/download/refined/obj")
+async def download_refined_obj(
+    task_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Convert the refined GLB to OBJ + MTL + textures and return as ZIP."""
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalars().first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.user_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not your task")
+
+    refined_path = task.output_glb_path_refined
+    actual_task_id = task_id
+    if not refined_path:
+        child_result = await db.execute(
+            select(Task).where(
+                Task.parent_task_id == task_id,
+                Task.refine_status == "completed",
+                Task.output_glb_path_refined != "",
+            ).order_by(Task.created_at.desc())
+        )
+        child = child_result.scalars().first()
+        if child is None:
+            raise HTTPException(status_code=400, detail="No refined GLB available")
+        refined_path = child.output_glb_path_refined
+        actual_task_id = child.id
+
+    glb_path = settings.OUTPUT_DIR / refined_path
+    if not glb_path.exists():
+        raise HTTPException(status_code=404, detail="Refined GLB file not found")
+
+    zip_path = str(settings.OUTPUT_DIR / f"task_{actual_task_id}_refined_obj.zip")
+    try:
+        _glb_to_obj_zip(str(glb_path), zip_path, f"pixal3d_task_{actual_task_id}_refined")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OBJ conversion failed: {e}")
+
+    return FileResponse(zip_path, media_type="application/zip",
+                        filename=f"pixal3d_task_{actual_task_id}_refined_obj.zip")
+
+
 @router.get("/{task_id}/glb-url")
 async def get_glb_url(
     task_id: int,
@@ -362,6 +466,16 @@ async def refine_task(
             status_code=400,
             detail=f"Parent task must be completed before refining (current: {parent.status})",
         )
+
+    # Only backends that save latents support the refine pipeline.
+    from app.backends.registry import backend_supports_refine
+    parent_backend = (parent.parameters or {}).get("backend", "pixal3d")
+    if not backend_supports_refine(parent_backend):
+        raise HTTPException(
+            status_code=400,
+            detail=f"The '{parent_backend}' backend does not support the refine pipeline.",
+        )
+
     if not parent.state_path or not os.path.exists(parent.state_path):
         raise HTTPException(
             status_code=400,

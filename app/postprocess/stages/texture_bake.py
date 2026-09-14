@@ -64,18 +64,25 @@ def run(ctx):
     _progress(ctx, 2)
     ctx.check_cancel()
 
-    # ---- interpolate low-poly surface position + face normals + tangents ----
-    lp_face_normals = _compute_face_normals(v, f)
+    # ---- interpolate low-poly surface position + smooth normals + tangents ----
     pos = dr.interpolate(v.unsqueeze(0).contiguous(), rast, f)[0][0]  # (H, W, 3)
     # Interpolate per-vertex tangents (xyz) through the rasterizer.
     # NOTE: ``tangents[:, :3]`` is a strided view — nvdiffrast requires
     # contiguous inputs, so call .contiguous() explicitly.
     tan_xyz = tangents[:, :3].contiguous().unsqueeze(0)
     tan_interp = dr.interpolate(tan_xyz, rast, f)[0][0]            # (H, W, 3)
-    # Per-texel low-poly face id (the chunk offset is stored in rast[..., 3]).
-    face_ids = (rast[0, ..., 3] - 1).long()
-    face_ids = torch.clamp(face_ids, 0, f.shape[0] - 1)
-    lp_normals_tex = lp_face_normals[face_ids]                      # (H, W, 3)
+    # Interpolate the low-poly SMOOTH vertex normals (including hard-edge
+    # splits) — the same normal the engine interpolates at render time. Using
+    # flat face normals here would double-shade the baked normal map.
+    if ctx.lp_normals is not None:
+        lp_n = torch.from_numpy(np.ascontiguousarray(ctx.lp_normals)).to("cuda").float()
+        lp_normals_tex = dr.interpolate(lp_n.unsqueeze(0).contiguous(), rast, f)[0][0]
+        lp_normals_tex = torch.nn.functional.normalize(lp_normals_tex, dim=-1, eps=1e-6)
+    else:
+        lp_face_normals = _compute_face_normals(v, f)
+        face_ids = (rast[0, ..., 3] - 1).long()
+        face_ids = torch.clamp(face_ids, 0, f.shape[0] - 1)
+        lp_normals_tex = lp_face_normals[face_ids]                  # (H, W, 3)
     _progress(ctx, 4)
     ctx.check_cancel()
 
@@ -86,8 +93,10 @@ def run(ctx):
     hp_f = torch.from_numpy(ctx.hp_faces).to("cuda")
     hp_tri = hp_v[hp_f[face_id.long()]]
     closest_pos = (hp_tri * uvw.unsqueeze(-1)).sum(dim=1)
-    hp_face_normals = _compute_face_normals(hp_v, hp_f)
-    hp_normals_at = hp_face_normals[face_id.long()]
+    # Interpolate the high-poly's SMOOTH vertex normals (computed in Stage 1)
+    # at the closest point. Baking flat face normals reintroduces faceting
+    # into the normal map on smooth surfaces.
+    hp_normals_at = _interpolate_highpoly_normals(ctx.hp_normals, hp_f, face_id, uvw)
     _progress(ctx, 6)
     ctx.check_cancel()
 
@@ -137,9 +146,10 @@ def run(ctx):
 
     # ---- bake tangent-space normal map ----
     if bake_normal:
+        yflip = str(ctx.params.get("refine_normal_yflip", "directx"))
         ctx.tex_normal = _bake_normal_map(
             mask, lp_normals_tex, tan_interp, hp_normals_at, valid_pos,
-            closest_pos, v, f, rast, H, W,
+            closest_pos, v, f, rast, H, W, yflip,
         )
         _progress(ctx, 12)
         ctx.check_cancel()
@@ -175,6 +185,16 @@ def _compute_face_normals(v: torch.Tensor, f: torch.Tensor) -> torch.Tensor:
     return n
 
 
+def _interpolate_highpoly_normals(hp_normals_np, hp_f, face_id, uvw):
+    """Interpolate the high-poly's smooth per-vertex normals at the closest
+    point on each face using the barycentric coordinates ``uvw`` returned by
+    the BVH distance query."""
+    hp_n = torch.from_numpy(np.ascontiguousarray(hp_normals_np)).to("cuda")
+    tri_n = hp_n[hp_f[face_id.long()]]          # (M, 3, 3)
+    n = (tri_n * uvw.unsqueeze(-1)).sum(dim=1)  # (M, 3)
+    return torch.nn.functional.normalize(n, dim=-1)
+
+
 def _to_uint8(texels: torch.Tensor) -> np.ndarray:
     """Convert a full-size (H, W) or (H, W, C) float attribute tensor to uint8.
 
@@ -186,16 +206,19 @@ def _to_uint8(texels: torch.Tensor) -> np.ndarray:
 
 
 def _bake_normal_map(mask, lp_normals_tex, tan_interp, hp_normals_at, valid_pos,
-                     closest_pos, v, f, rast, H, W) -> np.ndarray:
+                     closest_pos, v, f, rast, H, W, yflip="directx") -> np.ndarray:
     """Compute tangent-space normals using the MikkTSpace tangent basis.
 
     The tangent (T) is interpolated from per-vertex MikkTSpace tangents. The
-    bitangent (B) = sign * cross(N, T). The high-poly face normal is
+    bitangent (B) = sign * cross(N, T). The high-poly smooth normal is
     transformed into the (T, B, N) basis — the same basis the engine
     reconstructs at render time from the stored TANGENT attribute + normal.
+
+    ``yflip`` selects the green-channel convention: "directx" (Unreal) inverts
+    Y, "opengl" (Unity) leaves it as-is.
     """
     lp_n = lp_normals_tex[mask]                  # (M, 3) low-poly face normals
-    hp_n = hp_normals_at                          # (M, 3) high-poly face normals
+    hp_n = hp_normals_at                          # (M, 3) high-poly smooth normals
     tan = tan_interp[mask]                         # (M, 3) interpolated tangent xyz
 
     # Orthonormalize tangent against the normal (Gram-Schmidt).
@@ -213,6 +236,11 @@ def _bake_normal_map(mask, lp_normals_tex, tan_interp, hp_normals_at, valid_pos,
         (hp_n * b).sum(-1),
         (hp_n * lp_n).sum(-1),
     ], dim=-1)
+
+    # Apply the requested green-channel (Y) convention before encoding.
+    if yflip == "directx":
+        ts = ts.clone()
+        ts[..., 1] = -ts[..., 1]
 
     # Encode to [0,255] with the standard normal-map convention.
     ts = ts.clamp(-1, 1)

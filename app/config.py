@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     LOW_VRAM: bool = False
     ATTN_BACKEND: str = "sdpa"
 
+    # Generation backends (see app/backends). DEFAULT_BACKEND selects which
+    # backend the UI starts with: "pixal3d" or "triposg".
+    DEFAULT_BACKEND: str = "pixal3d"
+    # TripoSG model (HuggingFace repo ID or local path; geometry-only backend)
+    TRIPOSG_MODEL_PATH: str = "VAST-AI/TripoSG"
+    # Background-removal model used by the TripoSG preprocessing
+    RMBG_MODEL_NAME: str = "briaai/RMBG-2.0"
+
     # Multi-GPU worker configuration
     # Comma-separated GPU ids to enable (e.g. "0,1"). Empty = auto-detect all visible GPUs.
     GPU_IDS: str = ""

@@ -236,13 +236,130 @@ PARAMETER_DEFINITIONS = {
 }
 
 
-def get_default_parameters() -> dict:
-    return {k: v["default"] for k, v in PARAMETER_DEFINITIONS.items()}
+# --------------------------------------------------------------------------- #
+# TripoSG backend parameters
+# (mirrors modly's modly-triposg-extension manifest params_schema)
+# --------------------------------------------------------------------------- #
+
+TRIPOSG_PARAMETER_DEFINITIONS = {
+    "seed": {
+        "label": "Seed",
+        "type": "int",
+        "default": -1,
+        "min": -1,
+        "max": 2147483647,
+        "step": 1,
+        "group": "Base",
+        "tooltip": "Seed for reproducibility. Set to -1 for a random seed on every run. Same seed + same image + same parameters = identical output.",
+    },
+    "num_inference_steps": {
+        "label": "Inference Steps",
+        "type": "int",
+        "default": 50,
+        "min": 8,
+        "max": 50,
+        "step": 1,
+        "group": "Sampling",
+        "tooltip": "Number of rectified-flow denoising steps. More steps = better quality but slower. 50 is the recommended default; 20-30 is a good speed/quality trade-off.",
+    },
+    "guidance_scale": {
+        "label": "CFG Scale",
+        "type": "float",
+        "default": 7.0,
+        "min": 0.0,
+        "max": 20.0,
+        "step": 0.5,
+        "group": "Sampling",
+        "tooltip": "Classifier-free guidance strength. Higher = closer to the input image; lower = more diverse shape variations.",
+    },
+    "foreground_ratio": {
+        "label": "Foreground Ratio",
+        "type": "float",
+        "default": 0.85,
+        "min": 0.5,
+        "max": 1.0,
+        "step": 0.05,
+        "group": "Preprocess",
+        "tooltip": "How much of the canvas the subject fills after background removal. 0.85 is the recommended default; lower values leave more margin around the object.",
+    },
+    "use_flash_decoder": {
+        "label": "Decoder",
+        "type": "select",
+        "default": "DiffDMC",
+        "options": [
+            {"value": "DiffDMC", "label": "DiffDMC"},
+            {"value": "Marching Cubes", "label": "Marching Cubes"},
+        ],
+        "group": "Mesh",
+        "tooltip": "Mesh decoder. DiffDMC (diso) is faster and produces watertight meshes; Marching Cubes handles complex topologies with holes or deep cavities better.",
+    },
+    "faces": {
+        "label": "Max Faces",
+        "type": "int",
+        "default": -1,
+        "min": -1,
+        "max": 500000,
+        "step": 1000,
+        "group": "Mesh",
+        "tooltip": "Target face count for mesh simplification. -1 disables simplification and keeps the raw decoder output.",
+    },
+    "enable_texture": {
+        "label": "Texture from Input Image",
+        "type": "bool",
+        "default": True,
+        "group": "Mesh",
+        "tooltip": "Project the input photo onto the generated mesh and bake a base-color texture with a neutral PBR material (roughness 0.6, metallic 0). Back/side faces are filled by mirrored projection and inpainting. Disable for raw geometry-only output.",
+    },
+    "texture_size": {
+        "label": "Texture Size",
+        "type": "int",
+        "default": 1024,
+        "min": 512,
+        "max": 2048,
+        "step": 512,
+        "group": "Mesh",
+        "tooltip": "Resolution of the baked base-color texture atlas. 1024 is a good balance; 2048 for finer detail.",
+    },
+}
+
+# backend id -> parameter definitions
+BACKEND_PARAMETER_DEFINITIONS = {
+    "pixal3d": PARAMETER_DEFINITIONS,
+    "triposg": TRIPOSG_PARAMETER_DEFINITIONS,
+}
+
+
+def parameter_definitions_for(backend_id: str) -> dict:
+    """Return the parameter schema for a backend. Raises ValueError if unknown."""
+    from app.config import settings
+
+    backend_id = backend_id or settings.DEFAULT_BACKEND
+    defs = BACKEND_PARAMETER_DEFINITIONS.get(backend_id)
+    if defs is None:
+        raise ValueError(f"Unknown backend: {backend_id}")
+    return defs
+
+
+def get_default_parameters(backend_id: str = "pixal3d") -> dict:
+    defs = parameter_definitions_for(backend_id)
+    return {**{k: v["default"] for k, v in defs.items()}, "backend": backend_id}
 
 
 def validate_parameters(params: dict) -> dict:
-    validated = {}
-    for key, defn in PARAMETER_DEFINITIONS.items():
+    """Validate/normalize a parameter dict against its backend's schema.
+
+    The backend is read from the ``backend`` key inside the parameters
+    themselves (kept as part of the task JSON, so presets and re-submits
+    carry it around naturally). Unknown keys are dropped, known keys are
+    coerced to their declared type and missing keys get their defaults.
+    """
+    from app.config import settings
+
+    backend_id = str(params.get("backend") or settings.DEFAULT_BACKEND)
+    defs = parameter_definitions_for(backend_id)  # raises on unknown backend
+
+    validated = {"backend": backend_id}
+    for key, defn in defs.items():
         if key in params:
             val = params[key]
             if defn["type"] == "int":

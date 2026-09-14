@@ -72,6 +72,7 @@ const I18N = {
         'detail.source_image': 'Source Image',
         'detail.3d_model': '3D Model',
         'detail.download_glb': 'Download GLB',
+        'detail.download_obj': 'Download OBJ',
         'detail.delete': 'Delete',
         'detail.copy_params': 'Copy Params',
         'detail.params_copied': 'Parameters copied! Click Submit to use them.',
@@ -145,6 +146,7 @@ const I18N = {
         'msg.submitted': 'Task submitted to queue!',
         'msg.submit_failed': 'Submit failed: ',
         'msg.completed': 'Task completed!',
+        'msg.return': 'Return to New Task',
         'msg.task_failed': 'Task failed: ',
         'msg.delete_task': 'Delete this task?',
         'msg.task_deleted': 'Task deleted',
@@ -210,6 +212,10 @@ const I18N = {
         'refine.parent_required': 'This task must finish generating before it can be refined.',
         'refine.state_missing': 'Cannot refine: the original latent state is missing.',
         'refine.started': 'Refine started. Track progress in the detail view.',
+        'create.backend': 'Backend',
+        'create.shuffle_seed': 'Randomize seed',
+        'backend.no_texture': 'geometry only',
+        'backend.not_downloaded': 'Model not downloaded yet — the first run will download it automatically.',
     },
     zh: {
         'app.title': 'Pixal3D Studio',
@@ -283,6 +289,7 @@ const I18N = {
         'detail.source_image': '原图',
         'detail.3d_model': '3D模型',
         'detail.download_glb': '下载GLB',
+        'detail.download_obj': '下载OBJ',
         'detail.delete': '删除',
         'detail.copy_params': '复制参数',
         'detail.params_copied': '参数已复制！点击提交即可使用。',
@@ -357,6 +364,7 @@ const I18N = {
         'msg.submit_failed': '提交失败：',
         'msg.completed': '任务完成！',
         'msg.task_failed': '任务失败：',
+        'msg.return': '返回新建任务',
         'msg.delete_task': '确认删除此任务？',
         'msg.task_deleted': '任务已删除',
         'msg.delete_failed': '删除失败：',
@@ -421,6 +429,10 @@ const I18N = {
         'refine.parent_required': '此任务需先完成生成才能精细化。',
         'refine.state_missing': '无法精细化：原始潜变量状态缺失。',
         'refine.started': '精细化已开始。在详情视图中跟踪进度。',
+        'create.backend': '生成后端',
+        'create.shuffle_seed': '随机种子',
+        'backend.no_texture': '仅几何',
+        'backend.not_downloaded': '模型尚未下载 — 首次运行时会自动下载。',
     }
 };
 
@@ -448,6 +460,14 @@ const PARAM_LABELS_ZH = {
     'Max Num Tokens': '最大Token数',
     'GLB Decimation Target': 'GLB简化目标',
     'GLB Texture Size': 'GLB纹理尺寸',
+    'Seed': '种子',
+    'Inference Steps': '推理步数',
+    'CFG Scale': 'CFG 引导强度',
+    'Foreground Ratio': '前景占比',
+    'Decoder': '网格解码器',
+    'Max Faces': '最大面数',
+    'Texture from Input Image': '从输入图片生成纹理',
+    'Texture Size': '纹理尺寸',
 };
 
 const PARAM_TOOLTIPS_ZH = {
@@ -474,6 +494,13 @@ const PARAM_TOOLTIPS_ZH = {
     'max_num_tokens': '级联管线中允许的最大稀疏Token数。限制生成的3D结构的复杂性。较高值允许更多几何细节但增加显存使用和推理时间。49152是测试默认值。',
     'decimation_target': 'GLB导出期间网格简化的目标三角形数。较高值保留更多几何细节但产生更大文件。100,000对大多数用例是良好平衡。减少到50,000用于更快处理。',
     'texture_size': '导出GLB中烘焙的PBR纹理图集分辨率。2048提供良好质量；1024对大多数Web查看器足够；4096提供高细节但可能显著减慢UV展开。',
+    'num_inference_steps': '整流流去噪步数。步数越多质量越好但速度越慢。50为推荐默认值；20-30是速度与质量的良好折中。',
+    'guidance_scale': '无分类器引导强度。较高值更贴近输入图像；较低值产生更多样的形状变化。',
+    'foreground_ratio': '背景移除后主体占据画布的比例。0.85为推荐默认值；较低值为物体周围留出更多边距。',
+    'use_flash_decoder': '网格解码器。DiffDMC（diso）更快且生成水密网格；Marching Cubes 更适合带孔洞或深腔的复杂拓扑。',
+    'faces': '网格简化的目标面数。-1 禁用简化，保留解码器原始输出。',
+    'enable_texture': '将输入照片投影到生成的网格上，并烘焙基础颜色纹理与中性PBR材质（粗糙度0.6，金属度0）。背面/侧面通过镜像投影和修复填充。禁用则输出纯几何。',
+    'texture_size': '烘焙的基础颜色纹理图集分辨率。1024是良好平衡；2048可获得更精细细节。',
 };
 
 const GROUP_ZH = {
@@ -484,6 +511,16 @@ const GROUP_ZH = {
     'Camera': '相机',
     'Advanced': '高级',
     'GLB Export': 'GLB导出',
+    'Sampling': '采样',
+    'Preprocess': '预处理',
+    'Mesh': '网格',
+};
+
+// Backend descriptions (Chinese), keyed by backend id. English descriptions
+// come from the API (/api/backends).
+const BACKEND_DESC_ZH = {
+    pixal3d: '腾讯 Pixal3D / TRELLIS.2 像素对齐级联管线：稀疏结构、形状与 PBR 纹理潜变量解码为带纹理的 GLB。支持精细化后处理管线。约 18 GB 显存（或低显存模式）。',
+    triposg: 'VAST TripoSG — 基于大规模整流流 Transformer 的单图高保真 3D 形状生成。仅输出几何（无纹理），水密网格。约 8-10 GB 显存。',
 };
 
 let currentLang = localStorage.getItem('pixal3d_lang') || 'en';
